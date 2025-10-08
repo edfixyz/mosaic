@@ -1,0 +1,27 @@
+[package]
+name = "mosaic-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+mosaic-serve = { path = "../mosaic-serve" }
+mosaic-fi = { path = "../mosaic-fi" }
+mosaic-mcp = { path = "../mosaic-mcp" }
+tokio = { version = "1.46", features = ["rt-multi-thread", "net", "macros", "fs", "signal"] }
+tokio-util = "0.7"
+axum = { version = "0.8", features = ["macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
+clap = { version = "4.5", features = ["derive"] }
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "std", "fmt"] }
+rmcp = { version = "0.8.1", features = [
+    "server",
+    "macros",
+    "client",
+    "transport-streamable-http-server",
+    "schemars",
+] }
+

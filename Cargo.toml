@@ -2,5 +2,8 @@
 resolver = "3"
 members = [
     "./mosaic-miden",
-    "./mosaic-fi"
+    "./mosaic-fi",
+    "./mosaic-serve",
+    "./mosaic-server",
+    "./mosaic-mcp"
 ]

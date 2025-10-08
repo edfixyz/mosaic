@@ -2,6 +2,8 @@
 
 A privacy-preserving over-the-counter (OTC) trading platform built on the Miden protocol.
 
+🔴 Under heavy development, expect dragons! 🔴
+
 ## Overview
 
 Mosaic enables trustless OTC trading while maintaining participant privacy through Miden's zero-knowledge proof system. The platform combines private participant identities with public price discovery and private settlement.
@@ -15,9 +17,15 @@ Mosaic enables trustless OTC trading while maintaining participant privacy throu
 
 ## Architecture
 
+The Mosaic stack is designed to be easily deployable locally, enabling private state to be stored locally safely. 
+
+<img src="./docs/img/mosaic_stack.png" width="600">
+
 | Component | Description |
 |-----------|-------------|
-| `mosaic-miden` | Core abstractions and types for Miden protocol integration |
-| `mosaic-fi` | Financial primitives and trading logic |
-| `mosaic-server` | API server and order matching engine |
 | `mosaic-web` | Next.js frontend application |
+| `mosaic-server` | API server and order matching engine |
+| `mosaic-serve` | API server and order matching engine |
+| `mosaic-mcp` | An experimental MCP server |
+| `mosaic-fi` | Financial primitives and trading logic |
+| `mosaic-miden` | Core abstractions and types for Miden protocol integration |

@@ -1,0 +1,29 @@
+use.miden::note
+use.miden::tx
+use.std::sys
+use.std::crypto::hashes::rpo
+
+use.external_contract::book
+
+const.INPUTS_START=0
+const.INPUTS_AMOUNT=4
+const.INPUTS_PRICE=5
+
+begin
+    push.INPUTS_START exec.note::get_inputs drop drop
+    # => []
+    
+    mem_load.INPUTS_AMOUNT
+    # => [amount]
+
+    mem_load.INPUTS_PRICE
+    # => [price, amount]
+
+    padw mem_loadw.INPUTS_START
+    # => [INTENT_UUID, price, amount]
+
+    call.book::insert_offer
+
+    exec.sys::truncate_stack
+    # => []
+end
