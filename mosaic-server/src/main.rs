@@ -257,12 +257,22 @@ async fn main() -> Result<()> {
     if !args.mcp && !args.rest {
         eprintln!("Error: At least one server must be enabled. Use --mcp or --rest or both.");
         eprintln!("\nUsage examples:");
-        eprintln!("  mosaic-server --mcp                      # Start MCP server only on port 8000");
-        eprintln!("  mosaic-server --rest                     # Start REST API server only on port 3000");
-        eprintln!("  mosaic-server --mcp --rest               # Start both servers (same port 8000)");
+        eprintln!(
+            "  mosaic-server --mcp                      # Start MCP server only on port 8000"
+        );
+        eprintln!(
+            "  mosaic-server --rest                     # Start REST API server only on port 3000"
+        );
+        eprintln!(
+            "  mosaic-server --mcp --rest               # Start both servers (same port 8000)"
+        );
         eprintln!("  mosaic-server --mcp --mcp-port 9000      # Start MCP server on custom port");
-        eprintln!("  mosaic-server --rest --rest-port 4000    # Start REST API server on custom port");
-        eprintln!("  mosaic-server --mcp --rest --mcp-port 9000 --rest-port 9001  # Both on different ports");
+        eprintln!(
+            "  mosaic-server --rest --rest-port 4000    # Start REST API server on custom port"
+        );
+        eprintln!(
+            "  mosaic-server --mcp --rest --mcp-port 9000 --rest-port 9001  # Both on different ports"
+        );
         std::process::exit(1);
     }
 
