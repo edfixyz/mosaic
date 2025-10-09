@@ -66,7 +66,7 @@ async fn post_note_handler(
     }
 
     // Post the note
-    if let Err(_) = post_note(market, payload.note).await {
+    if post_note(market, payload.note).await.is_err() {
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": "Failed to post note"})),
