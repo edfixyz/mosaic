@@ -43,6 +43,12 @@ pub struct Mosaic {
     prompt_router: PromptRouter<Mosaic>,
 }
 
+impl Default for Mosaic {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[tool_router]
 impl Mosaic {
     #[allow(dead_code)]
@@ -285,6 +291,7 @@ mod tests {
 
     #[tokio::test]
     #[ignore] // Skipping test due to inability to construct Peer<RoleServer> in tests
+    #[allow(invalid_value)] // Test is ignored, unsafe code only for demonstration
     async fn test_example_prompt_execution() {
         let counter = Mosaic::new();
         let context = rmcp::handler::server::prompt::PromptContext::new(
