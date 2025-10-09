@@ -1,4 +1,7 @@
 #![allow(dead_code)]
+use mosaic_fi::AccountType;
+use mosaic_miden::Network;
+use mosaic_serve::Serve;
 use std::sync::Arc;
 
 use rmcp::{
@@ -8,164 +11,378 @@ use rmcp::{
         wrapper::Parameters,
     },
     model::*,
-    prompt, prompt_handler, prompt_router, schemars,
+    prompt_handler, prompt_router, schemars,
     service::RequestContext,
     tool, tool_handler, tool_router,
 };
-use serde_json::json;
 use tokio::sync::Mutex;
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct StructRequest {
-    pub a: i32,
-    pub b: i32,
+pub struct CreateAccountRequest {
+    /// 32-byte identifier as a hex string (64 characters)
+    pub identifier: String,
+    /// Account type: "Client", "Desk", or "Liquidity"
+    pub account_type: String,
+    /// Network: "Testnet" or "Localnet"
+    pub network: String,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct ExamplePromptArgs {
-    /// A message to put in the prompt
-    pub message: String,
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListAccountsRequest {
+    /// 32-byte identifier as a hex string (64 characters)
+    pub identifier: String,
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-pub struct CounterAnalysisArgs {
-    /// The target value you're trying to reach
-    pub goal: i32,
-    /// Preferred strategy: 'fast' or 'careful'
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub strategy: Option<String>,
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClientSyncRequest {
+    /// 32-byte identifier as a hex string (64 characters)
+    pub identifier: String,
+    /// Network: "Testnet" or "Localnet"
+    pub network: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CreatePrivateNoteRequest {
+    /// 32-byte identifier as a hex string (64 characters)
+    pub identifier: String,
+    /// Network: "Testnet" or "Localnet"
+    pub network: String,
+    /// Account ID in bech32 format
+    pub account_id: String,
+    /// Order as JSON object (e.g., {"LiquidityOffer": {"market": "BTC/USD", "uuid": 12345, "amount": 1000, "price": 50000}})
+    pub order: mosaic_fi::note::Order,
 }
 
 #[derive(Clone)]
 pub struct Mosaic {
-    counter: Arc<Mutex<i32>>,
+    serve: Arc<Mutex<Serve>>,
     tool_router: ToolRouter<Mosaic>,
     prompt_router: PromptRouter<Mosaic>,
-}
-
-impl Default for Mosaic {
-    fn default() -> Self {
-        Self::new()
-    }
 }
 
 #[tool_router]
 impl Mosaic {
     #[allow(dead_code)]
-    pub fn new() -> Self {
+    pub fn new(serve: Serve) -> Self {
         Self {
-            counter: Arc::new(Mutex::new(0)),
+            serve: Arc::new(Mutex::new(serve)),
             tool_router: Self::tool_router(),
             prompt_router: Self::prompt_router(),
         }
     }
 
-    fn _create_resource_text(&self, uri: &str, name: &str) -> Resource {
-        RawResource::new(uri, name.to_string()).no_annotation()
-    }
-
-    #[tool(description = "Increment the counter by 1")]
-    async fn increment(&self) -> Result<CallToolResult, McpError> {
-        let mut counter = self.counter.lock().await;
-        *counter += 1;
-        Ok(CallToolResult::success(vec![Content::text(
-            counter.to_string(),
-        )]))
-    }
-
-    #[tool(description = "Decrement the counter by 1")]
-    async fn decrement(&self) -> Result<CallToolResult, McpError> {
-        let mut counter = self.counter.lock().await;
-        *counter -= 1;
-        Ok(CallToolResult::success(vec![Content::text(
-            counter.to_string(),
-        )]))
-    }
-
-    #[tool(description = "Get the current counter value")]
-    async fn get_value(&self) -> Result<CallToolResult, McpError> {
-        let counter = self.counter.lock().await;
-        Ok(CallToolResult::success(vec![Content::text(
-            counter.to_string(),
-        )]))
-    }
-
-    #[tool(description = "Say hello to the client")]
-    fn say_hello(&self) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text("hello")]))
-    }
-
-    #[tool(description = "Repeat what you say")]
-    fn echo(&self, Parameters(object): Parameters<JsonObject>) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text(
-            serde_json::Value::Object(object).to_string(),
-        )]))
-    }
-
-    #[tool(description = "Calculate the sum of two numbers")]
-    fn sum(
+    #[tool(description = "Create a new Mosaic account with the specified identifier and type")]
+    async fn create_account(
         &self,
-        Parameters(StructRequest { a, b }): Parameters<StructRequest>,
+        Parameters(req): Parameters<CreateAccountRequest>,
     ) -> Result<CallToolResult, McpError> {
-        Ok(CallToolResult::success(vec![Content::text(
-            (a + b).to_string(),
-        )]))
+        // Parse hex identifier
+        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
+            let error_msg = format!("Invalid identifier hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse identifier");
+            McpError::invalid_params(error_msg, None)
+        })?;
+
+        if identifier_bytes.len() != 32 {
+            let error_msg = format!(
+                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
+                identifier_bytes.len()
+            );
+            tracing::error!(error = %error_msg, "Invalid identifier length");
+            return Err(McpError::invalid_params(error_msg, None));
+        }
+
+        let mut identifier = [0u8; 32];
+        identifier.copy_from_slice(&identifier_bytes);
+
+        // Parse account type
+        let account_type = match req.account_type.as_str() {
+            "Client" => AccountType::Client,
+            "Desk" => AccountType::Desk,
+            "Liquidity" => AccountType::Liquidity,
+            _ => {
+                let error_msg = format!(
+                    "Invalid account type '{}'. Must be 'Client', 'Desk', or 'Liquidity'",
+                    req.account_type
+                );
+                tracing::error!(error = %error_msg, account_type = %req.account_type, "Invalid account type");
+                return Err(McpError::invalid_params(error_msg, None));
+            }
+        };
+
+        // Parse network
+        let network = match req.network.as_str() {
+            "Testnet" => Network::Testnet,
+            "Localnet" => Network::Localnet,
+            _ => {
+                let error_msg = format!(
+                    "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
+                    req.network
+                );
+                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
+                return Err(McpError::invalid_params(error_msg, None));
+            }
+        };
+
+        // Create the account
+        let account_id_bech32 = {
+            let mut serve = self.serve.lock().await;
+            serve
+                .new_account(identifier, account_type, network)
+                .await
+                .map_err(|e| {
+                    let error_msg = format!("Failed to create account: {}", e);
+                    tracing::error!(
+                        error = %error_msg,
+                        account_type = %req.account_type,
+                        network = %req.network,
+                        "Failed to create account"
+                    );
+                    McpError::internal_error(error_msg, None)
+                })?
+        };
+
+        tracing::info!(
+            tool = "create_account",
+            account_id = %account_id_bech32,
+            account_type = %req.account_type,
+            network = %req.network,
+            "Created account"
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Account created successfully!\nIdentifier: {}\nAccount ID (bech32): {}",
+            req.identifier, account_id_bech32
+        ))]))
+    }
+
+    #[tool(
+        description = "List all account IDs (bech32) with their networks for a given identifier"
+    )]
+    async fn list_accounts(
+        &self,
+        Parameters(req): Parameters<ListAccountsRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        // Parse hex identifier
+        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
+            let error_msg = format!("Invalid identifier hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse identifier");
+            McpError::invalid_params(error_msg, None)
+        })?;
+
+        if identifier_bytes.len() != 32 {
+            let error_msg = format!(
+                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
+                identifier_bytes.len()
+            );
+            tracing::error!(error = %error_msg, "Invalid identifier length");
+            return Err(McpError::invalid_params(error_msg, None));
+        }
+
+        let mut identifier = [0u8; 32];
+        identifier.copy_from_slice(&identifier_bytes);
+
+        // List accounts
+        let accounts = {
+            let serve = self.serve.lock().await;
+            serve.list_accounts(identifier).await.map_err(|e| {
+                let error_msg = format!("Failed to list accounts: {}", e);
+                tracing::error!(error = %error_msg, "Failed to list accounts");
+                McpError::internal_error(error_msg, None)
+            })?
+        };
+
+        tracing::info!(
+            tool = "list_accounts",
+            account_count = accounts.len(),
+            "Listed accounts"
+        );
+
+        if accounts.is_empty() {
+            return Ok(CallToolResult::success(vec![Content::text(format!(
+                "No accounts found for identifier: {}",
+                req.identifier
+            ))]));
+        }
+
+        let mut response = format!("Accounts for identifier {}:\n\n", req.identifier);
+        for (i, (account_id, network)) in accounts.iter().enumerate() {
+            response.push_str(&format!(
+                "{}. Account ID: {}\n   Network: {}\n\n",
+                i + 1,
+                account_id,
+                network
+            ));
+        }
+
+        Ok(CallToolResult::success(vec![Content::text(response)]))
+    }
+
+    #[tool(
+        description = "Sync a client's state with the network for a given identifier and network"
+    )]
+    async fn client_sync(
+        &self,
+        Parameters(req): Parameters<ClientSyncRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        // Parse hex identifier
+        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
+            let error_msg = format!("Invalid identifier hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse identifier");
+            McpError::invalid_params(error_msg, None)
+        })?;
+
+        if identifier_bytes.len() != 32 {
+            let error_msg = format!(
+                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
+                identifier_bytes.len()
+            );
+            tracing::error!(error = %error_msg, "Invalid identifier length");
+            return Err(McpError::invalid_params(error_msg, None));
+        }
+
+        let mut identifier = [0u8; 32];
+        identifier.copy_from_slice(&identifier_bytes);
+
+        // Parse network
+        let network = match req.network.as_str() {
+            "Testnet" => Network::Testnet,
+            "Localnet" => Network::Localnet,
+            _ => {
+                let error_msg = format!(
+                    "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
+                    req.network
+                );
+                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
+                return Err(McpError::invalid_params(error_msg, None));
+            }
+        };
+
+        // Get client handle
+        let client_handle = {
+            let mut serve = self.serve.lock().await;
+            serve.get_client(identifier, network).await.map_err(|e| {
+                let error_msg = format!("Failed to get client: {}", e);
+                tracing::error!(error = %error_msg, network = %req.network, "Failed to get client");
+                McpError::internal_error(error_msg, None)
+            })?
+        };
+
+        // Sync the client state - ClientHandle.sync() is Send-safe!
+        let sync_result = client_handle.sync().await.map_err(|e| {
+            let error_msg = format!("Failed to sync state: {}", e);
+            tracing::error!(error = %error_msg, network = %req.network, "Failed to sync state");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        tracing::info!(
+            tool = "client_sync",
+            network = %req.network,
+            block_num = %sync_result.block_num,
+            new_public_notes = sync_result.new_public_notes.len(),
+            committed_notes = sync_result.committed_notes.len(),
+            consumed_notes = sync_result.consumed_notes.len(),
+            updated_accounts = sync_result.updated_accounts.len(),
+            "Client synced"
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Client synced successfully!\nIdentifier: {}\nNetwork: {}\nBlock: {}\nNew public notes: {}\nCommitted notes: {}\nConsumed notes: {}\nUpdated accounts: {}",
+            req.identifier,
+            req.network,
+            sync_result.block_num,
+            sync_result.new_public_notes.len(),
+            sync_result.committed_notes.len(),
+            sync_result.consumed_notes.len(),
+            sync_result.updated_accounts.len()
+        ))]))
+    }
+
+    #[tool(
+        description = "Create a private note from an order for a given identifier, network, and account"
+    )]
+    async fn create_private_note(
+        &self,
+        Parameters(req): Parameters<CreatePrivateNoteRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        // Parse hex identifier
+        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
+            let error_msg = format!("Invalid identifier hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse identifier");
+            McpError::invalid_params(error_msg, None)
+        })?;
+
+        if identifier_bytes.len() != 32 {
+            let error_msg = format!(
+                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
+                identifier_bytes.len()
+            );
+            tracing::error!(error = %error_msg, "Invalid identifier length");
+            return Err(McpError::invalid_params(error_msg, None));
+        }
+
+        let mut identifier = [0u8; 32];
+        identifier.copy_from_slice(&identifier_bytes);
+
+        // Parse network
+        let network = match req.network.as_str() {
+            "Testnet" => Network::Testnet,
+            "Localnet" => Network::Localnet,
+            _ => {
+                let error_msg = format!(
+                    "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
+                    req.network
+                );
+                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
+                return Err(McpError::invalid_params(error_msg, None));
+            }
+        };
+
+        // Parse order from JSON
+        let order: mosaic_fi::note::Order = req.order;
+
+        // Create the note
+        let mosaic_note = {
+            let mut serve = self.serve.lock().await;
+            serve
+                .create_private_note(identifier, network, req.account_id.clone(), order)
+                .await
+                .map_err(|e| {
+                    let error_msg = format!("Failed to create private note: {}", e);
+                    tracing::error!(
+                        error = %error_msg,
+                        account_id = %req.account_id,
+                        network = %req.network,
+                        "Failed to create private note"
+                    );
+                    McpError::internal_error(error_msg, None)
+                })?
+        };
+
+        tracing::info!(
+            tool = "create_private_note",
+            account_id = %req.account_id,
+            network = %req.network,
+            market = %mosaic_note.market,
+            "Created and committed private note"
+        );
+
+        // Serialize the note to JSON for the response
+        let note_json = serde_json::to_string_pretty(&mosaic_note).map_err(|e| {
+            let error_msg = format!("Failed to serialize note: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize note");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Private note created successfully!\nIdentifier: {}\nNetwork: {}\nAccount ID: {}\n\nNote:\n{}",
+            req.identifier, req.network, req.account_id, note_json
+        ))]))
     }
 }
 
 #[prompt_router]
-impl Mosaic {
-    /// This is an example prompt that takes one required argument, message
-    #[prompt(name = "example_prompt")]
-    async fn example_prompt(
-        &self,
-        Parameters(args): Parameters<ExamplePromptArgs>,
-        _ctx: RequestContext<RoleServer>,
-    ) -> Result<Vec<PromptMessage>, McpError> {
-        let prompt = format!(
-            "This is an example prompt with your message here: '{}'",
-            args.message
-        );
-        Ok(vec![PromptMessage {
-            role: PromptMessageRole::User,
-            content: PromptMessageContent::text(prompt),
-        }])
-    }
-
-    /// Analyze the current counter value and suggest next steps
-    #[prompt(name = "counter_analysis")]
-    async fn counter_analysis(
-        &self,
-        Parameters(args): Parameters<CounterAnalysisArgs>,
-        _ctx: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, McpError> {
-        let strategy = args.strategy.unwrap_or_else(|| "careful".to_string());
-        let current_value = *self.counter.lock().await;
-        let difference = args.goal - current_value;
-
-        let messages = vec![
-            PromptMessage::new_text(
-                PromptMessageRole::Assistant,
-                "I'll analyze the counter situation and suggest the best approach.",
-            ),
-            PromptMessage::new_text(
-                PromptMessageRole::User,
-                format!(
-                    "Current counter value: {}\nGoal value: {}\nDifference: {}\nStrategy preference: {}\n\nPlease analyze the situation and suggest the best approach to reach the goal.",
-                    current_value, args.goal, difference, strategy
-                ),
-            ),
-        ];
-
-        Ok(GetPromptResult {
-            description: Some(format!(
-                "Counter analysis for reaching {} from {}",
-                args.goal, current_value
-            )),
-            messages,
-        })
-    }
-}
+impl Mosaic {}
 
 #[tool_handler]
 #[prompt_handler]
@@ -174,12 +391,10 @@ impl ServerHandler for Mosaic {
         ServerInfo {
             protocol_version: ProtocolVersion::V_2024_11_05,
             capabilities: ServerCapabilities::builder()
-                .enable_prompts()
-                .enable_resources()
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("This server provides counter tools and prompts. Tools: increment, decrement, get_value, say_hello, echo, sum. Prompts: example_prompt (takes a message), counter_analysis (analyzes counter state with a goal).".to_string()),
+            instructions: Some("Mosaic MCP server. Tools: create_account - Create a new Mosaic account with a 32-byte identifier (hex string), account type (Client, Desk, or Liquidity), and network (Testnet or Localnet); list_accounts - List all account IDs (bech32) with their networks for a given identifier; client_sync - Sync a client's state with the network; create_private_note - Create a private note from an order for a given identifier, network, and account.".to_string()),
         }
     }
 
@@ -189,10 +404,7 @@ impl ServerHandler for Mosaic {
         _: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
         Ok(ListResourcesResult {
-            resources: vec![
-                self._create_resource_text("str:////Users/to/some/path/", "cwd"),
-                self._create_resource_text("memo://insights", "memo-name"),
-            ],
+            resources: vec![],
             next_cursor: None,
         })
     }
@@ -202,26 +414,12 @@ impl ServerHandler for Mosaic {
         ReadResourceRequestParam { uri }: ReadResourceRequestParam,
         _: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResult, McpError> {
-        match uri.as_str() {
-            "str:////Users/to/some/path/" => {
-                let cwd = "/Users/to/some/path/";
-                Ok(ReadResourceResult {
-                    contents: vec![ResourceContents::text(cwd, uri)],
-                })
-            }
-            "memo://insights" => {
-                let memo = "Business Intelligence Memo\n\nAnalysis has revealed 5 key insights ...";
-                Ok(ReadResourceResult {
-                    contents: vec![ResourceContents::text(memo, uri)],
-                })
-            }
-            _ => Err(McpError::resource_not_found(
-                "resource_not_found",
-                Some(json!({
-                    "uri": uri
-                })),
-            )),
-        }
+        Err(McpError::resource_not_found(
+            "resource_not_found",
+            Some(serde_json::json!({
+                "uri": uri
+            })),
+        ))
     }
 
     async fn list_resource_templates(
@@ -246,80 +444,5 @@ impl ServerHandler for Mosaic {
             tracing::info!(?initialize_headers, %initialize_uri, "initialize from http server");
         }
         Ok(self.get_info())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_prompt_attributes_generated() {
-        // Verify that the prompt macros generate the expected attributes
-        let example_attr = Mosaic::example_prompt_prompt_attr();
-        assert_eq!(example_attr.name, "example_prompt");
-        assert!(example_attr.description.is_some());
-        assert!(example_attr.arguments.is_some());
-
-        let args = example_attr.arguments.unwrap();
-        assert_eq!(args.len(), 1);
-        assert_eq!(args[0].name, "message");
-        assert_eq!(args[0].required, Some(true));
-
-        let analysis_attr = Mosaic::counter_analysis_prompt_attr();
-        assert_eq!(analysis_attr.name, "counter_analysis");
-        assert!(analysis_attr.description.is_some());
-        assert!(analysis_attr.arguments.is_some());
-
-        let args = analysis_attr.arguments.unwrap();
-        assert_eq!(args.len(), 2);
-        assert_eq!(args[0].name, "goal");
-        assert_eq!(args[0].required, Some(true));
-        assert_eq!(args[1].name, "strategy");
-        assert_eq!(args[1].required, Some(false));
-    }
-
-    #[tokio::test]
-    async fn test_prompt_router_has_routes() {
-        let router = Mosaic::prompt_router();
-        assert!(router.has_route("example_prompt"));
-        assert!(router.has_route("counter_analysis"));
-
-        let prompts = router.list_all();
-        assert_eq!(prompts.len(), 2);
-    }
-
-    #[tokio::test]
-    #[ignore] // Skipping test due to inability to construct Peer<RoleServer> in tests
-    #[allow(invalid_value)] // Test is ignored, unsafe code only for demonstration
-    async fn test_example_prompt_execution() {
-        let counter = Mosaic::new();
-        let context = rmcp::handler::server::prompt::PromptContext::new(
-            &counter,
-            "example_prompt".to_string(),
-            Some({
-                let mut map = serde_json::Map::new();
-                map.insert(
-                    "message".to_string(),
-                    serde_json::Value::String("Test message".to_string()),
-                );
-                map
-            }),
-            RequestContext {
-                meta: Default::default(),
-                ct: tokio_util::sync::CancellationToken::new(),
-                id: rmcp::model::NumberOrString::String("test-1".to_string().into()),
-                peer: unsafe { std::mem::zeroed() },
-                extensions: Default::default(),
-            },
-        );
-
-        let router = Mosaic::prompt_router();
-        let result = router.get_prompt(context).await;
-        assert!(result.is_ok());
-
-        let prompt_result = result.unwrap();
-        assert_eq!(prompt_result.messages.len(), 1);
-        assert_eq!(prompt_result.messages[0].role, PromptMessageRole::User);
     }
 }

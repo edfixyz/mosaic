@@ -8,6 +8,9 @@ name = "mosaic_mcp"
 path = "src/lib.rs"
 
 [dependencies]
+mosaic-fi = { path = "../mosaic-fi" }
+mosaic-miden = { path = "../mosaic-miden" }
+mosaic-serve = { path = "../mosaic-serve" }
 rmcp = { version = "0.8.1", features = [
     "server",
     "macros",
@@ -27,3 +30,4 @@ tracing-subscriber = { version = "0.3", features = [
     "fmt",
 ] }
 axum = { version = "0.8", features = ["macros"] }
+hex = "0.4"

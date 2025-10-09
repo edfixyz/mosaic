@@ -1,4 +1,3 @@
-use anyhow::Result;
 use axum::{
     Router,
     extract::{Json, Path},
@@ -15,13 +14,12 @@ use rmcp::transport::streamable_http_server::{
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-use uuid::Uuid;
 
 use mosaic_serve::{get_notes, post_note};
 
 #[derive(Parser, Debug)]
 #[command(name = "mosaic-server")]
-#[command(about = "Mosaic server with MCP and REST API endpoints", long_about = None)]
+#[command(about = "Mosaic server with MCP and REST endpoints", long_about = None)]
 struct Args {
     /// Enable MCP server
     #[arg(long, default_value_t = false)]
@@ -38,6 +36,10 @@ struct Args {
     /// REST API server port
     #[arg(long, default_value_t = 3000)]
     rest_port: u16,
+
+    /// Storage path for accounts
+    #[arg(long, default_value = "./mosaic_store")]
+    storage_path: String,
 }
 
 // Request/Response types for HTTP API
@@ -56,15 +58,6 @@ async fn post_note_handler(
     Path(market): Path<String>,
     Json(payload): Json<PostNoteRequest>,
 ) -> impl IntoResponse {
-    // Validate market is a valid UUID
-    if Uuid::parse_str(&market).is_err() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid market UUID"})),
-        )
-            .into_response();
-    }
-
     // Post the note
     if post_note(market, payload.note).await.is_err() {
         return (
@@ -83,15 +76,6 @@ async fn post_note_handler(
 
 // GET /market/:market
 async fn get_notes_handler(Path(market): Path<String>) -> impl IntoResponse {
-    // Validate market is a valid UUID
-    if Uuid::parse_str(&market).is_err() {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid market UUID"})),
-        )
-            .into_response();
-    }
-
     // Get notes and handle errors
     let notes = match get_notes(market).await {
         Ok(notes) => notes,
@@ -109,12 +93,17 @@ async fn get_notes_handler(Path(market): Path<String>) -> impl IntoResponse {
     (StatusCode::OK, Json(response)).into_response()
 }
 
-async fn run_mcp_server(port: u16) -> Result<()> {
+async fn run_mcp_server(port: u16, storage_path: String) -> Result<(), Box<dyn std::error::Error>> {
     let bind_address = format!("127.0.0.1:{}", port);
     tracing::info!("Starting MCP server on {}", bind_address);
+    tracing::info!("Using storage path: {}", storage_path);
 
     let service = StreamableHttpService::new(
-        || Ok(Mosaic::new()),
+        move || {
+            let serve = mosaic_serve::Serve::new(&storage_path)
+                .map_err(|e| std::io::Error::other(format!("Failed to create Serve: {}", e)))?;
+            Ok(Mosaic::new(serve))
+        },
         LocalSessionManager::default().into(),
         Default::default(),
     );
@@ -131,7 +120,7 @@ async fn run_mcp_server(port: u16) -> Result<()> {
     Ok(())
 }
 
-async fn run_rest_server(port: u16) -> Result<()> {
+async fn run_rest_server(port: u16) -> Result<(), Box<dyn std::error::Error>> {
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
     tracing::info!("Starting REST API server on {}", addr);
 
@@ -150,13 +139,21 @@ async fn run_rest_server(port: u16) -> Result<()> {
     Ok(())
 }
 
-async fn run_combined_server_same_port(port: u16) -> Result<()> {
+async fn run_combined_server_same_port(
+    port: u16,
+    storage_path: String,
+) -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("127.0.0.1:{}", port);
     tracing::info!("Starting combined MCP and REST API server on {}", addr);
+    tracing::info!("Using storage path: {}", storage_path);
 
     // Create MCP service
     let mcp_service = StreamableHttpService::new(
-        || Ok(Mosaic::new()),
+        move || {
+            let serve = mosaic_serve::Serve::new(&storage_path)
+                .map_err(|e| std::io::Error::other(format!("Failed to create Serve: {}", e)))?;
+            Ok(Mosaic::new(serve))
+        },
         LocalSessionManager::default().into(),
         Default::default(),
     );
@@ -182,9 +179,14 @@ async fn run_combined_server_same_port(port: u16) -> Result<()> {
     Ok(())
 }
 
-async fn run_both_servers_different_ports(mcp_port: u16, rest_port: u16) -> Result<()> {
+async fn run_both_servers_different_ports(
+    mcp_port: u16,
+    rest_port: u16,
+    storage_path: String,
+) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Starting MCP server on 127.0.0.1:{}", mcp_port);
     tracing::info!("Starting REST API server on 0.0.0.0:{}", rest_port);
+    tracing::info!("Using storage path: {}", storage_path);
 
     // Create a cancellation token for graceful shutdown
     let shutdown_token = tokio_util::sync::CancellationToken::new();
@@ -199,10 +201,16 @@ async fn run_both_servers_different_ports(mcp_port: u16, rest_port: u16) -> Resu
     // Run both servers concurrently
     let mcp_handle = {
         let shutdown = shutdown_token.clone();
+        let storage_path = storage_path.clone();
         tokio::spawn(async move {
             let bind_address = format!("127.0.0.1:{}", mcp_port);
             let service = StreamableHttpService::new(
-                || Ok(Mosaic::new()),
+                move || {
+                    let serve = mosaic_serve::Serve::new(&storage_path).map_err(|e| {
+                        std::io::Error::other(format!("Failed to create Serve: {}", e))
+                    })?;
+                    Ok(Mosaic::new(serve))
+                },
                 LocalSessionManager::default().into(),
                 Default::default(),
             );
@@ -241,7 +249,7 @@ async fn run_both_servers_different_ports(mcp_port: u16, rest_port: u16) -> Resu
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Initialize tracing
     tracing_subscriber::registry()
         .with(
@@ -276,10 +284,13 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    // Create storage directory if it doesn't exist
+    std::fs::create_dir_all(&args.storage_path)?;
+
     match (args.mcp, args.rest) {
         (true, false) => {
             // MCP server only
-            run_mcp_server(args.mcp_port).await?;
+            run_mcp_server(args.mcp_port, args.storage_path).await?;
         }
         (false, true) => {
             // REST API server only
@@ -289,10 +300,11 @@ async fn main() -> Result<()> {
             // Both servers
             if args.mcp_port == args.rest_port {
                 // Same port: use combined router for efficiency
-                run_combined_server_same_port(args.mcp_port).await?;
+                run_combined_server_same_port(args.mcp_port, args.storage_path).await?;
             } else {
                 // Different ports: run two separate servers concurrently
-                run_both_servers_different_ports(args.mcp_port, args.rest_port).await?;
+                run_both_servers_different_ports(args.mcp_port, args.rest_port, args.storage_path)
+                    .await?;
             }
         }
         (false, false) => {
