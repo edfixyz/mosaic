@@ -1,0 +1,332 @@
+use.miden::account
+use.std::sys
+
+# Counter Slot
+const.COUNTER_SLOT = 0
+
+# Book
+const.BOOK_SLOT = 1
+
+# First entry
+const.BOOK_HEAD_SLOT = 2
+
+# Book slot format: map [0, 0, 0, this_id] -> [previous_id, next_id, price, amount]
+# Book head slot format: [zero, zero, zero, this_id]
+
+#
+# Insert an offer
+#   TODO: store INTENT_UUID
+#
+export.insert_offer
+    # => [INTENT_UUID, price, amount]
+
+    dropw
+    # => [price, amount]
+
+    push.BOOK_HEAD_SLOT
+    exec.account::get_item
+    # => [zero, zero, zero, head_id, price, amount]
+
+    drop drop drop
+    # => [head_id, price, amount]
+
+    dup push.0 eq # If head_id is zero (empty list)
+    if.true
+        # => [head_id, price, amount]
+
+        # Empty list - create first entry
+
+        exec.insert_first
+    
+    else
+        # => [head_id, price, amount]
+
+        push.0 swap
+        # => [head_id, previous_id=0, price, amount]
+
+        push.1
+        while.true # Loop through the list
+            # => [current_id, previous_id, price, amount]
+
+            dup push.0 eq
+            if.true
+                # => [current_id, previous_id, price, amount]
+                
+                drop
+                # => [previous_id, price, amount]
+
+                exec.insert_last
+
+                push.0 # Stop loop
+            else
+                dup push.0.0.0 push.BOOK_SLOT
+                exec.account::get_map_item                    
+                # => [current_previous_id, current_next_id, current_price, current_amount, current_id, previous_id, price, amount]
+
+                dup.6 dup.3
+                # => [current_price, price, current_previous_id, current_next_id, current_price, current_amount, current_id, previous_id, price, amount]
+
+                lte
+                if.true
+                    # => [current_previous_id, current_next_id, current_price, current_amount, current_id, previous_id, price, amount]
+
+                    drop drop drop drop swap drop
+                    # => [current_id, price, amount]
+
+                    exec.insert_before
+                    # => []
+
+                    push.0 # Stop loop
+                else
+                    # => [current_previous_id, current_next_id, current_price, current_amount, current_id, previous_id, price, amount]
+
+                    drop swap drop swap drop movup.2 drop
+                    # => [current_next_id, current_id, price, amount]
+
+                    push.1 # Continue loop
+                end
+            end
+        end # End loop
+    end
+end
+
+#
+# Insert before the current_id entry (cannot be null)
+#
+proc.insert_before
+    # => [current_id, price, amount]
+
+    dup push.0 eq
+    if.true
+        exec.insert_first
+    else
+        dup push.0.0.0
+        push.BOOK_SLOT exec.account::get_map_item
+        # => [current_previous_id, current_next_id, current_price, current_amount, current_id, price, amount]
+
+        movup.2 drop movup.2 drop swap drop
+        # => [current_previous_id, current_id, price, amount]
+
+        exec.increment_count
+        # => [id, current_previous_id, current_id, price, amount]
+
+        movup.4 movup.4 dup.4 dup.4 dup.4
+        # => [id, current_previous_id, current_id, price, amount, id, current_previous_id, current_id]
+
+        push.0.0.0        
+        push.BOOK_SLOT
+        exec.account::set_map_item
+        dropw dropw
+        # => [id, current_previous_id, current_id]
+
+        # Update next
+
+        dup movup.2
+        # => [current_previous_id, id, id, current_id]
+
+        dup push.0 eq
+        if.true
+            # => [current_previous_id, id, id, current_id]
+
+            dup.1
+            # => [id, current_previous_id, id, id, current_id]
+
+            push.0.0.0 push.BOOK_HEAD_SLOT
+            exec.account::set_item
+            dropw
+            # => [current_previous_id, id, id, current_id]
+        else
+            nop
+            # => [current_previous_id, id, id, current_id]
+        end
+
+        exec.update_next
+        # => [id, current_id]
+
+        # Update previous
+
+        swap
+        # => [current_id, id]
+
+        exec.update_previous
+        # => []
+    end
+end
+
+#
+# Insert last entry
+#
+#
+proc.insert_last
+    # => [previous_id, price, amount]
+
+    dup push.0 eq
+    if.true
+        exec.insert_first
+    else
+        # => [previous_id, price, amount]
+
+        dup movdn.3
+        # => [previous_id, price, amount, previous_id]
+
+        push.0 swap
+        # => [previous_id, next_id=0, price, amount, previous_id]
+
+        exec.increment_count
+        # => [id, previous_id, next_id=0, price, amount, previous_id]
+
+        dup movdn.6
+        # => [id, previous_id, next_id=0, price, amount, previous_id, id]
+
+        push.0.0.0
+        push.BOOK_SLOT exec.account::set_map_item
+        dropw dropw
+        # => [previous_id, id]
+
+        exec.update_next        
+    end
+end
+
+#
+# Insert first entry
+#
+#
+proc.insert_first
+    # => [next_id, price, amount]
+
+    dup movdn.4
+    # => [next_id, price, amount, next_id]
+
+    push.0
+    # => [previous_id=0, next_id, price, amount, next_id]
+
+    exec.increment_count
+    # => [id, previous_id=0, next_id, price, amount, next_id]
+
+    dup movdn.6
+    # => [id, previous_id=0, next_id, price, amount, next_id, id]
+
+    dup push.0.0.0
+    push.BOOK_HEAD_SLOT
+    exec.account::set_item
+    dropw
+    # => [id, previous_id=0, next_id, price, amount, next_id, id]
+
+    push.0.0.0
+    push.BOOK_SLOT exec.account::set_map_item
+    dropw dropw
+    # => [next_id, id]
+
+    exec.update_previous
+    # => []
+end
+
+#
+# Upate next_id field of an entry
+#
+#
+proc.update_next
+    # => [id, updated_next_id]
+    # >>> Need to update the entry at 'id' to have 'updated_next_id' as its next pointer
+    
+    dup push.0 eq
+    if.true
+        drop drop
+    else
+        swap
+        # => [updated_next_id, id]
+        
+        dup.1 push.0.0.0
+        # => [0, 0, 0, id, updated_next_id, id]
+
+        push.BOOK_SLOT
+        exec.account::get_map_item
+        # => [previous_id, next_id, price, amount, updated_next_id, id]
+
+        movup.4
+        # => [updated_next_id, previous_id, next_id, price, amount, id]
+
+        swap.2 drop
+        # => [previous_id, updated_next_id, price, amount, id]
+
+        movup.4 push.0.0.0
+        # => [zero, zero, zero, id, previous_id, updated_next_id, price, amount]
+
+        push.BOOK_SLOT
+        exec.account::set_map_item
+        dropw dropw
+        # => []
+    end
+end
+
+#
+# Upate previous_id field of an entry
+#
+#
+proc.update_previous
+    # => [id, updated_previous_id]
+    # >>> Need update the entry at 'id' to have 'updated_previous_id' as its previous pointer
+    
+    dup push.0 eq
+    if.true
+        drop drop
+    else
+        swap
+        # => [updated_previous_id, id]
+        
+        dup.1 push.0.0.0
+        # => [0, 0, 0, id, updated_previous_id, id]
+
+        push.BOOK_SLOT
+        exec.account::get_map_item
+        # => [previous_id, next_id, price, amount, updated_previous_id, id]
+
+        drop
+        # => [next_id, price, amount, updated_previous_id, id]
+
+        movup.3
+        # => [updated_previous_id, next_id, price, amount, id]
+
+        movup.4 push.0.0.0
+        # => [zero, zero, zero, id, updated_previous_id, next_id, price, amount]
+
+        push.BOOK_SLOT
+        exec.account::set_map_item
+        dropw dropw
+        # => []
+    end
+end
+
+#
+# Get a new entry id
+#
+#
+proc.increment_count
+    push.COUNTER_SLOT
+    # => [index]
+
+    exec.account::get_item
+    # => [count, 0, 0, 0]
+
+    push.1 add
+    # => [count+1, 0, 0, 0]
+
+    dup
+    # => [count+1, count+1, 0, 0, 0]
+
+    movdn.4
+    # => [count+1, 0, 0, 0, count+1]
+
+    dup push.0 neq assert
+    # Catch overflow
+    # => [count+1, 0, 0, 0]
+
+    push.COUNTER_SLOT
+    # => [index, count+1, 0, 0, 0]
+
+    exec.account::set_item
+    # => [OLD_VALUE]
+
+    dropw
+    # => [count+1]
+end
