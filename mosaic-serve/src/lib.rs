@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 
 pub struct Serve {
     store_path: PathBuf,
-    // Client cache: (identifier, network) -> ClientHandle
     clients: HashMap<([u8; 32], Network), ClientHandle>,
 }
 
@@ -93,17 +92,14 @@ impl Serve {
         identifier: [u8; 32],
         network: Network,
     ) -> Result<ClientHandle, Box<dyn std::error::Error>> {
-        // Check if we already have a client for this identifier and network in cache
         if let Some(client_handle) = self.clients.get(&(identifier, network)) {
             return Ok(client_handle.clone());
         }
 
         let path = self.client_path(identifier, network);
 
-        // Client not in memory, create a new one on its dedicated runtime
         let client_handle = ClientHandle::spawn(path, network).await?;
 
-        // Cache the client handle
         self.clients
             .insert((identifier, network), client_handle.clone());
 
@@ -119,16 +115,13 @@ impl Serve {
         let path = self.client_path(identifier, network);
         Self::check_or_create(&path)?;
 
-        // Get or create client handle
         let client_handle = self.get_client(identifier, network).await?;
 
-        // Create account via the client handle
         let account = client_handle
             .create_account()
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create account: {}", e))?;
 
-        // Convert account ID to bech32
         let account_id = account.id();
         let address = miden_objects::address::AccountIdAddress::new(
             account_id,
@@ -138,7 +131,6 @@ impl Serve {
         let account_id_bech32 =
             miden_objects::address::Address::from(address).to_bech32(network_id);
 
-        // Persist to file
         let account_id_file = path.join("account_id.txt");
         use std::fs::OpenOptions;
         use std::io::Write;
@@ -158,10 +150,8 @@ impl Serve {
         account_id_bech32: String,
         order: mosaic_fi::note::Order,
     ) -> Result<MosaicNote, Box<dyn std::error::Error>> {
-        // Get the client handle
         let client_handle = self.get_client(identifier, network).await?;
 
-        // Parse the account ID from bech32
         let (_network_id, address) =
             miden_objects::address::Address::from_bech32(&account_id_bech32)?;
         let account_id = match address {
@@ -173,23 +163,89 @@ impl Serve {
             }
         };
 
-        // Verify the account exists in the client
         let _account_record = client_handle
             .get_account(account_id)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get account: {}", e))?
             .ok_or_else(|| anyhow::anyhow!("Account not found: {}", account_id_bech32))?;
 
-        // Compile the note using the account ID
         let mosaic_note = mosaic_fi::note::compile_note_from_account_id(account_id, order)?;
 
-        // Automatically commit the note to the network
         client_handle
             .commit_note(account_id, mosaic_note.miden_note.miden_note_hex.clone())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to commit note: {}", e))?;
 
         Ok(mosaic_note)
+    }
+
+    pub async fn create_note_from_masm(
+        &mut self,
+        identifier: [u8; 32],
+        network: Network,
+        account_id_bech32: String,
+        note_type: mosaic_miden::note::NoteType,
+        program: String,
+        libraries: Vec<(String, String)>,
+        inputs: Vec<(String, mosaic_miden::note::Value)>,
+        secret: Option<[u64; 4]>,
+    ) -> Result<mosaic_miden::note::MidenNote, Box<dyn std::error::Error>> {
+        let client_handle = self.get_client(identifier, network).await?;
+
+        let (_network_id, address) =
+            miden_objects::address::Address::from_bech32(&account_id_bech32)?;
+        let account_id = match address {
+            miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
+            _ => {
+                return Err(
+                    format!("Invalid address type for account ID: {}", account_id_bech32).into(),
+                );
+            }
+        };
+
+        let _account_record = client_handle
+            .get_account(account_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get account: {}", e))?
+            .ok_or_else(|| anyhow::anyhow!("Account not found: {}", account_id_bech32))?;
+
+        // Create MidenAbstractNote
+        let abstract_note = mosaic_miden::note::MidenAbstractNote {
+            version: mosaic_miden::version::VERSION_STRING.to_string(),
+            note_type,
+            program,
+            libraries,
+        };
+
+        // Use default secret if not provided
+        let secret_word = if let Some(secret_arr) = secret {
+            // Convert [u64; 4] to Word (which is [Felt; 4])
+            use miden_objects::Felt;
+            [
+                Felt::new(secret_arr[0]),
+                Felt::new(secret_arr[1]),
+                Felt::new(secret_arr[2]),
+                Felt::new(secret_arr[3]),
+            ]
+        } else {
+            *miden_objects::Word::default()
+        };
+
+        // Compile the note
+        let miden_note = mosaic_miden::note::compile_note(
+            abstract_note,
+            account_id,
+            secret_word.into(),
+            inputs,
+        )?;
+
+        // Commit the note
+        client_handle
+            .commit_note(account_id, miden_note.miden_note_hex.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to commit note: {}", e))?;
+
+        Ok(miden_note)
     }
 }
 
