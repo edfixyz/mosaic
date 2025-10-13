@@ -1840,6 +1840,7 @@ dependencies = [
  "miden-objects",
  "rand",
  "rand_chacha",
+ "schemars",
  "serde",
  "serde_json",
  "tokio",

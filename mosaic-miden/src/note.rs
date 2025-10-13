@@ -29,7 +29,7 @@ pub type Recipient = String;
 ///
 /// * `Word` - A 256-bit word represented as four 64-bit unsigned integers
 /// * `Element` - A single 64-bit field element
-#[derive(PartialEq, Serialize, Deserialize, Debug)]
+#[derive(PartialEq, Serialize, Deserialize, Debug, schemars::JsonSchema)]
 pub enum Value {
     /// A 256-bit word (4 × 64-bit elements)
     Word([u64; 4]),

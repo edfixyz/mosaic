@@ -53,6 +53,29 @@ pub struct CreatePrivateNoteRequest {
     pub order: mosaic_fi::note::Order,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CreateNoteFromMasmRequest {
+    /// 32-byte identifier as a hex string (64 characters)
+    pub identifier: String,
+    /// Network: "Testnet" or "Localnet"
+    pub network: String,
+    /// Account ID in bech32 format
+    pub account_id: String,
+    /// Note type: "Private" or "Public"
+    pub note_type: String,
+    /// Miden assembly program source code
+    pub program: String,
+    /// Optional external libraries as array of [name, source] pairs
+    #[serde(default)]
+    pub libraries: Vec<(String, String)>,
+    /// Optional inputs as array of [name, value] pairs where value is {"Word": [u64, u64, u64, u64]} or {"Element": u64}
+    #[serde(default)]
+    pub inputs: Vec<(String, mosaic_miden::note::Value)>,
+    /// Optional secret as 4-element array [u64, u64, u64, u64]
+    #[serde(default)]
+    pub secret: Option<[u64; 4]>,
+}
+
 #[derive(Clone)]
 pub struct Mosaic {
     serve: Arc<Mutex<Serve>>,
@@ -376,6 +399,112 @@ impl Mosaic {
 
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Private note created successfully!\nIdentifier: {}\nNetwork: {}\nAccount ID: {}\n\nNote:\n{}",
+            req.identifier, req.network, req.account_id, note_json
+        ))]))
+    }
+
+    #[tool(
+        description = "Create a note from low-level MASM code and inputs for a given identifier, network, and account"
+    )]
+    async fn create_note_from_masm(
+        &self,
+        Parameters(req): Parameters<CreateNoteFromMasmRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        // Parse hex identifier
+        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
+            let error_msg = format!("Invalid identifier hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse identifier");
+            McpError::invalid_params(error_msg, None)
+        })?;
+
+        if identifier_bytes.len() != 32 {
+            let error_msg = format!(
+                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
+                identifier_bytes.len()
+            );
+            tracing::error!(error = %error_msg, "Invalid identifier length");
+            return Err(McpError::invalid_params(error_msg, None));
+        }
+
+        let mut identifier = [0u8; 32];
+        identifier.copy_from_slice(&identifier_bytes);
+
+        // Parse network
+        let network = match req.network.as_str() {
+            "Testnet" => Network::Testnet,
+            "Localnet" => Network::Localnet,
+            _ => {
+                let error_msg = format!(
+                    "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
+                    req.network
+                );
+                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
+                return Err(McpError::invalid_params(error_msg, None));
+            }
+        };
+
+        // Parse note type
+        let note_type = match req.note_type.as_str() {
+            "Private" => mosaic_miden::note::NoteType::Private,
+            "Public" => {
+                let error_msg = "Public notes are not supported yet";
+                tracing::error!(error = %error_msg, note_type = %req.note_type, "Unsupported note type");
+                return Err(McpError::invalid_params(error_msg.to_string(), None));
+            }
+            _ => {
+                let error_msg = format!(
+                    "Invalid note type '{}'. Must be 'Private' or 'Public'",
+                    req.note_type
+                );
+                tracing::error!(error = %error_msg, note_type = %req.note_type, "Invalid note type");
+                return Err(McpError::invalid_params(error_msg, None));
+            }
+        };
+
+        // Create the note
+        let miden_note = {
+            let mut serve = self.serve.lock().await;
+            serve
+                .create_note_from_masm(
+                    identifier,
+                    network,
+                    req.account_id.clone(),
+                    note_type,
+                    req.program,
+                    req.libraries,
+                    req.inputs,
+                    req.secret,
+                )
+                .await
+                .map_err(|e| {
+                    let error_msg = format!("Failed to create note from MASM: {}", e);
+                    tracing::error!(
+                        error = %error_msg,
+                        account_id = %req.account_id,
+                        network = %req.network,
+                        "Failed to create note from MASM"
+                    );
+                    McpError::internal_error(error_msg, None)
+                })?
+        };
+
+        tracing::info!(
+            tool = "create_note_from_masm",
+            account_id = %req.account_id,
+            network = %req.network,
+            note_type = %req.note_type,
+            "Created and committed note from MASM"
+        );
+
+        // Serialize the note to JSON for the response
+        let note_json = serde_json::to_string_pretty(&miden_note).map_err(|e| {
+            let error_msg = format!("Failed to serialize note: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize note");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Note created from MASM successfully!\nIdentifier: {}\nNetwork: {}\nAccount ID: {}\n\nNote:\n{}",
             req.identifier, req.network, req.account_id, note_json
         ))]))
     }
