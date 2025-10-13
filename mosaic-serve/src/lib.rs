@@ -247,6 +247,14 @@ impl Serve {
 
         Ok(miden_note)
     }
+
+    /// Flush all cached clients
+    /// Returns the number of clients that were flushed
+    pub fn flush(&mut self) -> usize {
+        let count = self.clients.len();
+        self.clients.clear();
+        count
+    }
 }
 
 #[derive(Debug)]

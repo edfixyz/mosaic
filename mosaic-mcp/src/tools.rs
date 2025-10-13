@@ -76,6 +76,9 @@ pub struct CreateNoteFromMasmRequest {
     pub secret: Option<[u64; 4]>,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct FlushRequest {}
+
 #[derive(Clone)]
 pub struct Mosaic {
     serve: Arc<Mutex<Serve>>,
@@ -506,6 +509,28 @@ impl Mosaic {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Note created from MASM successfully!\nIdentifier: {}\nNetwork: {}\nAccount ID: {}\n\nNote:\n{}",
             req.identifier, req.network, req.account_id, note_json
+        ))]))
+    }
+
+    #[tool(description = "Flush all cached clients and in-memory objects")]
+    async fn flush(
+        &self,
+        Parameters(_req): Parameters<FlushRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let client_count = {
+            let mut serve = self.serve.lock().await;
+            serve.flush()
+        };
+
+        tracing::info!(
+            tool = "flush",
+            clients_flushed = client_count,
+            "Flushed cache"
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Cache flushed successfully!\nClients cleared: {}",
+            client_count
         ))]))
     }
 }
