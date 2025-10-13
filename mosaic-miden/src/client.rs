@@ -35,12 +35,14 @@ pub async fn create_client(
     let timeout_ms = 10_000;
     let rpc_api = Arc::new(TonicRpcClient::new(&endpoint, timeout_ms));
     let keystore_path = path.join("keystore");
+    let sqlite_path = path.join("miden_store.sqlite3");
     let keystore = Arc::new(FilesystemKeyStore::new(keystore_path)?);
 
     let client = ClientBuilder::new()
         .rpc(rpc_api)
         .authenticator(keystore.clone())
         .in_debug_mode(true.into())
+        .sqlite_store(sqlite_path.to_str().ok_or("path contains invalid UTF-8")?)
         .build()
         .await?;
 
