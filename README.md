@@ -17,15 +17,15 @@ Mosaic enables trustless OTC trading while maintaining participant privacy throu
 
 ## Architecture
 
-The Mosaic stack is designed to be easily deployable locally, enabling private state to be stored locally safely. 
+The Mosaic stack is designed for local deployment, ensuring private state remains secure and under user control.
 
 <img src="./docs/img/mosaic_stack.png" width="600">
 
 | Component | Description |
 |-----------|-------------|
 | `mosaic-web` | Next.js frontend application |
-| `mosaic-server` | API server and order matching engine |
-| `mosaic-serve` | API server and order matching engine |
-| `mosaic-mcp` | An experimental MCP server |
-| `mosaic-fi` | Financial primitives and trading logic |
+| `mosaic-server` | Backend server executable |
+| `mosaic-serve` | Persistence layer for clients, accounts, and notes |
+| `mosaic-mcp` | Experimental Model Context Protocol (MCP) server |
+| `mosaic-fi` | Financial primitives and trading logic implementation |
 | `mosaic-miden` | Core abstractions and types for Miden protocol integration |

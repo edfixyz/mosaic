@@ -4,14 +4,16 @@ use miden_assembly::{
     Assembler, DefaultSourceManager, Library, LibraryPath,
     ast::{Module, ModuleKind},
 };
+use miden_client::{Client, keystore::FilesystemKeyStore};
 use miden_client::{
     ScriptBuilder,
     account::AccountId,
     note::{Note, NoteAssets, NoteExecutionHint, NoteInputs, NoteMetadata, NoteRecipient, NoteTag},
-    transaction::TransactionKernel,
+    transaction::{OutputNote, TransactionKernel, TransactionRequestBuilder},
 };
-use miden_lib::utils::Serializable;
+use miden_lib::utils::{Deserializable, Serializable};
 use miden_objects::{Felt, Word};
+use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -202,6 +204,31 @@ pub fn compile_note(
         miden_note_hex: note_inner_string,
     };
     Ok(miden_note)
+}
+
+pub async fn commit_note(
+    client: &mut Client<FilesystemKeyStore<StdRng>>,
+    account_id: AccountId,
+    note: &MidenNote,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let note_bytes = hex::decode(&note.miden_note_hex)?;
+    let note_inner = Note::read_from_bytes(&note_bytes)?;
+
+    let tx_req = TransactionRequestBuilder::new()
+        .own_output_notes(vec![OutputNote::Full(note_inner)])
+        .build()?;
+    let tx_result = client.new_transaction(account_id, tx_req).await?;
+
+    let tx_id = tx_result.executed_transaction().id();
+    tracing::info!(
+        transaction_id = %tx_id,
+        account_id = %account_id,
+        "Transaction executed"
+    );
+
+    client.submit_transaction(tx_result).await?;
+
+    Ok(())
 }
 
 #[cfg(test)]

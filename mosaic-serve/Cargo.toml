@@ -5,3 +5,10 @@ edition = "2024"
 
 [dependencies]
 mosaic-fi = { path = "../mosaic-fi" }
+mosaic-miden = { path = "../mosaic-miden" }
+miden-client = { version = "0.11.9", features = ["testing", "tonic", "sqlite"] }
+miden-objects = { version = "0.11.4", default-features = false }
+rand = { version = "0.9" }
+bs58 = "0.5"
+tokio = { version = "1.46", features = ["rt-multi-thread", "macros"] }
+anyhow = "1.0"
