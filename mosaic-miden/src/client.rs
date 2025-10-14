@@ -12,9 +12,9 @@ use miden_client::{
 };
 use miden_lib::account::{auth::AuthRpoFalcon512, faucets::BasicFungibleFaucet};
 use miden_objects::{
+    Felt,
     account::{AccountBuilder, AccountStorageMode, AccountType as MidenAccountType},
     asset::TokenSymbol,
-    Felt,
 };
 use rand::{RngCore, rngs::StdRng};
 use std::path::{Path, PathBuf};
@@ -165,7 +165,13 @@ impl ClientHandle {
                     max_supply,
                     respond_to,
                 } => {
-                    let result = Self::create_faucet_account_impl(&mut client, &token_symbol, decimals, max_supply).await;
+                    let result = Self::create_faucet_account_impl(
+                        &mut client,
+                        &token_symbol,
+                        decimals,
+                        max_supply,
+                    )
+                    .await;
                     let _ = respond_to.send(result);
                 }
                 ClientCommand::GetAccount {
@@ -238,8 +244,8 @@ impl ClientHandle {
         let mut init_seed = [0u8; 32];
         client.rng().fill_bytes(&mut init_seed);
 
-        let symbol = TokenSymbol::new(token_symbol)
-            .map_err(|e| format!("Invalid token symbol: {}", e))?;
+        let symbol =
+            TokenSymbol::new(token_symbol).map_err(|e| format!("Invalid token symbol: {}", e))?;
         let max_supply_felt = Felt::new(max_supply);
 
         let key_pair = SecretKey::with_rng(client.rng());
@@ -248,8 +254,10 @@ impl ClientHandle {
             .account_type(MidenAccountType::FungibleFaucet)
             .storage_mode(AccountStorageMode::Public)
             .with_auth_component(AuthRpoFalcon512::new(key_pair.public_key()))
-            .with_component(BasicFungibleFaucet::new(symbol, decimals, max_supply_felt)
-                .map_err(|e| format!("Failed to create faucet component: {}", e))?);
+            .with_component(
+                BasicFungibleFaucet::new(symbol, decimals, max_supply_felt)
+                    .map_err(|e| format!("Failed to create faucet component: {}", e))?,
+            );
 
         let (miden_account, seed) = builder
             .build()

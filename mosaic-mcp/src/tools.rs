@@ -199,7 +199,9 @@ impl Mosaic {
         ))]))
     }
 
-    #[tool(description = "Create a new faucet account with the specified token symbol, decimals, and max supply")]
+    #[tool(
+        description = "Create a new faucet account with the specified token symbol, decimals, and max supply"
+    )]
     async fn create_faucet_account(
         &self,
         Parameters(req): Parameters<CreateFaucetAccountRequest>,
@@ -241,7 +243,13 @@ impl Mosaic {
         let account_id_bech32 = {
             let mut serve = self.serve.lock().await;
             serve
-                .new_faucet_account(identifier, network, req.token_symbol.clone(), req.decimals, req.max_supply)
+                .new_faucet_account(
+                    identifier,
+                    network,
+                    req.token_symbol.clone(),
+                    req.decimals,
+                    req.max_supply,
+                )
                 .await
                 .map_err(|e| {
                     let error_msg = format!("Failed to create faucet account: {}", e);

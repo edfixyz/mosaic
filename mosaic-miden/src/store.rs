@@ -1,5 +1,5 @@
 use crate::Network;
-use rusqlite::{params, Connection, Result as SqliteResult};
+use rusqlite::{Connection, Result as SqliteResult, params};
 use std::path::Path;
 
 /// Account storage using SQLite
@@ -65,7 +65,10 @@ impl Store {
     }
 
     /// List accounts for a specific network
-    pub fn list_accounts_by_network(&self, network: Network) -> SqliteResult<Vec<(String, String)>> {
+    pub fn list_accounts_by_network(
+        &self,
+        network: Network,
+    ) -> SqliteResult<Vec<(String, String)>> {
         let network_str = match network {
             Network::Testnet => "testnet",
             Network::Localnet => "localnet",

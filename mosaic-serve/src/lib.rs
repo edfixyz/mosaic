@@ -116,7 +116,7 @@ impl Serve {
             account_id,
             miden_objects::address::AddressInterface::Unspecified,
         );
-        
+
         let network_id = network.to_network_id();
         let account_id_bech32 =
             miden_objects::address::Address::from(address).to_bech32(network_id);
