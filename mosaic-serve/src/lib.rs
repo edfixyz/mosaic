@@ -114,8 +114,9 @@ impl Serve {
         let account_id = account.id();
         let address = miden_objects::address::AccountIdAddress::new(
             account_id,
-            miden_objects::address::AddressInterface::BasicWallet,
+            miden_objects::address::AddressInterface::Unspecified,
         );
+        
         let network_id = network.to_network_id();
         let account_id_bech32 =
             miden_objects::address::Address::from(address).to_bech32(network_id);
@@ -128,9 +129,46 @@ impl Serve {
             AccountType::Client => "Client",
             AccountType::Desk => "Desk",
             AccountType::Liquidity => "Liquidity",
+            AccountType::Faucet => "Faucet",
         };
 
         store.insert_account(&account_id_bech32, network, account_type_str)?;
+
+        Ok(account_id_bech32)
+    }
+
+    pub async fn new_faucet_account(
+        &mut self,
+        identifier: [u8; 32],
+        network: Network,
+        token_symbol: String,
+        decimals: u8,
+        max_supply: u64,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let path = self.client_path(identifier, network);
+        Self::check_or_create(&path)?;
+
+        let client_handle = self.get_client(identifier, network).await?;
+
+        let account = client_handle
+            .create_faucet_account(token_symbol, decimals, max_supply)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create faucet account: {}", e))?;
+
+        let account_id = account.id();
+        let address = miden_objects::address::AccountIdAddress::new(
+            account_id,
+            miden_objects::address::AddressInterface::Unspecified,
+        );
+        let network_id = network.to_network_id();
+        let account_id_bech32 =
+            miden_objects::address::Address::from(address).to_bech32(network_id);
+
+        // Store in SQLite database
+        let store_path = self.store_path(identifier, network);
+        let store = mosaic_miden::store::Store::new(&store_path)?;
+
+        store.insert_account(&account_id_bech32, network, "Faucet")?;
 
         Ok(account_id_bech32)
     }

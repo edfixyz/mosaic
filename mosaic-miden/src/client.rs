@@ -10,8 +10,12 @@ use miden_client::{
     store::{AccountRecord, AccountStatus},
     sync::SyncSummary,
 };
-use miden_lib::account::auth::AuthRpoFalcon512;
-use miden_objects::account::{AccountBuilder, AccountStorageMode, AccountType as MidenAccountType};
+use miden_lib::account::{auth::AuthRpoFalcon512, faucets::BasicFungibleFaucet};
+use miden_objects::{
+    account::{AccountBuilder, AccountStorageMode, AccountType as MidenAccountType},
+    asset::TokenSymbol,
+    Felt,
+};
 use rand::{RngCore, rngs::StdRng};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -55,6 +59,12 @@ pub enum ClientCommand {
         respond_to: oneshot::Sender<Result<SyncSummary, String>>,
     },
     CreateAccount {
+        respond_to: oneshot::Sender<Result<(miden_client::account::Account, SecretKey), String>>,
+    },
+    CreateFaucetAccount {
+        token_symbol: String,
+        decimals: u8,
+        max_supply: u64,
         respond_to: oneshot::Sender<Result<(miden_client::account::Account, SecretKey), String>>,
     },
     GetAccount {
@@ -149,6 +159,15 @@ impl ClientHandle {
                     let result = Self::create_account_impl(&mut client).await;
                     let _ = respond_to.send(result);
                 }
+                ClientCommand::CreateFaucetAccount {
+                    token_symbol,
+                    decimals,
+                    max_supply,
+                    respond_to,
+                } => {
+                    let result = Self::create_faucet_account_impl(&mut client, &token_symbol, decimals, max_supply).await;
+                    let _ = respond_to.send(result);
+                }
                 ClientCommand::GetAccount {
                     account_id,
                     respond_to,
@@ -204,6 +223,43 @@ impl ClientHandle {
             .add_account(&miden_account, Some(seed), false)
             .await
             .map_err(|e| format!("Add account failed: {}", e))?;
+        client.sync_state().await?;
+
+        Ok((miden_account, key_pair))
+    }
+
+    /// Implementation of faucet account creation logic
+    async fn create_faucet_account_impl(
+        client: &mut Client<FilesystemKeyStore<StdRng>>,
+        token_symbol: &str,
+        decimals: u8,
+        max_supply: u64,
+    ) -> Result<(miden_client::account::Account, SecretKey), String> {
+        let mut init_seed = [0u8; 32];
+        client.rng().fill_bytes(&mut init_seed);
+
+        let symbol = TokenSymbol::new(token_symbol)
+            .map_err(|e| format!("Invalid token symbol: {}", e))?;
+        let max_supply_felt = Felt::new(max_supply);
+
+        let key_pair = SecretKey::with_rng(client.rng());
+
+        let builder = AccountBuilder::new(init_seed)
+            .account_type(MidenAccountType::FungibleFaucet)
+            .storage_mode(AccountStorageMode::Public)
+            .with_auth_component(AuthRpoFalcon512::new(key_pair.public_key()))
+            .with_component(BasicFungibleFaucet::new(symbol, decimals, max_supply_felt)
+                .map_err(|e| format!("Failed to create faucet component: {}", e))?);
+
+        let (miden_account, seed) = builder
+            .build()
+            .map_err(|e| format!("Account build failed: {}", e))?;
+
+        client
+            .add_account(&miden_account, Some(seed), false)
+            .await
+            .map_err(|e| format!("Add account failed: {}", e))?;
+        client.sync_state().await?;
 
         Ok((miden_account, key_pair))
     }
@@ -247,6 +303,37 @@ impl ClientHandle {
 
         self.command_tx
             .send(ClientCommand::CreateAccount { respond_to })
+            .map_err(|_| "Client thread has shut down".to_string())?;
+
+        let (account, key_pair) = response_rx
+            .await
+            .map_err(|_| "Client thread dropped response".to_string())??;
+
+        // Store the key in the keystore
+        self.keystore
+            .add_key(&AuthSecretKey::RpoFalcon512(key_pair))
+            .map_err(|e| format!("Failed to store key: {}", e))?;
+
+        Ok(account)
+    }
+
+    /// Create a new faucet account in the client
+    /// Returns the account (the secret key is automatically stored in the keystore)
+    pub async fn create_faucet_account(
+        &self,
+        token_symbol: String,
+        decimals: u8,
+        max_supply: u64,
+    ) -> Result<miden_client::account::Account, String> {
+        let (respond_to, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ClientCommand::CreateFaucetAccount {
+                token_symbol,
+                decimals,
+                max_supply,
+                respond_to,
+            })
             .map_err(|_| "Client thread has shut down".to_string())?;
 
         let (account, key_pair) = response_rx

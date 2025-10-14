@@ -28,6 +28,20 @@ pub struct CreateAccountRequest {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CreateFaucetAccountRequest {
+    /// 32-byte identifier as a hex string (64 characters)
+    pub identifier: String,
+    /// Token symbol (e.g., "MID")
+    pub token_symbol: String,
+    /// Number of decimals for the token
+    pub decimals: u8,
+    /// Maximum supply of tokens
+    pub max_supply: u64,
+    /// Network: "Testnet" or "Localnet"
+    pub network: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListAccountsRequest {
     /// 32-byte identifier as a hex string (64 characters)
     pub identifier: String,
@@ -182,6 +196,78 @@ impl Mosaic {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Account created successfully!\nIdentifier: {}\nAccount ID (bech32): {}",
             req.identifier, account_id_bech32
+        ))]))
+    }
+
+    #[tool(description = "Create a new faucet account with the specified token symbol, decimals, and max supply")]
+    async fn create_faucet_account(
+        &self,
+        Parameters(req): Parameters<CreateFaucetAccountRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        // Parse hex identifier
+        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
+            let error_msg = format!("Invalid identifier hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse identifier");
+            McpError::invalid_params(error_msg, None)
+        })?;
+
+        if identifier_bytes.len() != 32 {
+            let error_msg = format!(
+                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
+                identifier_bytes.len()
+            );
+            tracing::error!(error = %error_msg, "Invalid identifier length");
+            return Err(McpError::invalid_params(error_msg, None));
+        }
+
+        let mut identifier = [0u8; 32];
+        identifier.copy_from_slice(&identifier_bytes);
+
+        // Parse network
+        let network = match req.network.as_str() {
+            "Testnet" => Network::Testnet,
+            "Localnet" => Network::Localnet,
+            _ => {
+                let error_msg = format!(
+                    "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
+                    req.network
+                );
+                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
+                return Err(McpError::invalid_params(error_msg, None));
+            }
+        };
+
+        // Create the faucet account
+        let account_id_bech32 = {
+            let mut serve = self.serve.lock().await;
+            serve
+                .new_faucet_account(identifier, network, req.token_symbol.clone(), req.decimals, req.max_supply)
+                .await
+                .map_err(|e| {
+                    let error_msg = format!("Failed to create faucet account: {}", e);
+                    tracing::error!(
+                        error = %error_msg,
+                        token_symbol = %req.token_symbol,
+                        network = %req.network,
+                        "Failed to create faucet account"
+                    );
+                    McpError::internal_error(error_msg, None)
+                })?
+        };
+
+        tracing::info!(
+            tool = "create_faucet_account",
+            account_id = %account_id_bech32,
+            token_symbol = %req.token_symbol,
+            decimals = req.decimals,
+            max_supply = req.max_supply,
+            network = %req.network,
+            "Created faucet account"
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Faucet account created successfully!\nIdentifier: {}\nAccount ID (bech32): {}\nToken: {} (decimals: {}, max supply: {})",
+            req.identifier, account_id_bech32, req.token_symbol, req.decimals, req.max_supply
         ))]))
     }
 

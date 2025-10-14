@@ -4,4 +4,5 @@ pub enum AccountType {
     Client,
     Desk,
     Liquidity,
+    Faucet,
 }
