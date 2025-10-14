@@ -91,20 +91,6 @@ pub struct CreateNoteFromMasmRequest {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct FundAccountRequest {
-    /// 32-byte identifier as a hex string (64 characters)
-    pub identifier: String,
-    /// Network: "Testnet" or "Localnet"
-    pub network: String,
-    /// Faucet account ID in bech32 format
-    pub faucet_account_id: String,
-    /// Target account ID in bech32 format
-    pub target_account_id: String,
-    /// Amount to transfer
-    pub amount: u64,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct FlushRequest {}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -661,85 +647,6 @@ impl Mosaic {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Mosaic version: {}",
             version
-        ))]))
-    }
-
-    #[tool(description = "Fund an account by transferring tokens from a faucet to a target account using P2ID note")]
-    async fn fund_account(
-        &self,
-        Parameters(req): Parameters<FundAccountRequest>,
-    ) -> Result<CallToolResult, McpError> {
-        // Parse hex identifier
-        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
-            let error_msg = format!("Invalid identifier hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse identifier");
-            McpError::invalid_params(error_msg, None)
-        })?;
-
-        if identifier_bytes.len() != 32 {
-            let error_msg = format!(
-                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
-                identifier_bytes.len()
-            );
-            tracing::error!(error = %error_msg, "Invalid identifier length");
-            return Err(McpError::invalid_params(error_msg, None));
-        }
-
-        let mut identifier = [0u8; 32];
-        identifier.copy_from_slice(&identifier_bytes);
-
-        // Parse network
-        let network = match req.network.as_str() {
-            "Testnet" => Network::Testnet,
-            "Localnet" => Network::Localnet,
-            _ => {
-                let error_msg = format!(
-                    "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
-                    req.network
-                );
-                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
-                return Err(McpError::invalid_params(error_msg, None));
-            }
-        };
-
-        // Fund the account
-        {
-            let mut serve = self.serve.lock().await;
-            serve
-                .fund_account(
-                    identifier,
-                    network,
-                    req.faucet_account_id.clone(),
-                    req.target_account_id.clone(),
-                    req.amount,
-                )
-                .await
-                .map_err(|e| {
-                    let error_msg = format!("Failed to fund account: {}", e);
-                    tracing::error!(
-                        error = %error_msg,
-                        faucet_account_id = %req.faucet_account_id,
-                        target_account_id = %req.target_account_id,
-                        amount = req.amount,
-                        network = %req.network,
-                        "Failed to fund account"
-                    );
-                    McpError::internal_error(error_msg, None)
-                })?
-        };
-
-        tracing::info!(
-            tool = "fund_account",
-            faucet_account_id = %req.faucet_account_id,
-            target_account_id = %req.target_account_id,
-            amount = req.amount,
-            network = %req.network,
-            "Funded account"
-        );
-
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Account funded successfully!\nFaucet: {}\nTarget: {}\nAmount: {}\nNetwork: {}",
-            req.faucet_account_id, req.target_account_id, req.amount, req.network
         ))]))
     }
 }

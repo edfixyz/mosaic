@@ -110,6 +110,51 @@ pub fn compile_note_from_account_id(
                 miden_note,
             })
         }
+        Order::FundAccount {
+            ref target_account_id,
+            amount,
+        } => {
+            // Parse target account ID from bech32
+            let (_network_id, address) =
+                miden_objects::address::Address::from_bech32(target_account_id)?;
+            let target_account = match address {
+                miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
+                _ => {
+                    return Err(format!(
+                        "Invalid address type for target account ID: {}",
+                        target_account_id
+                    )
+                    .into());
+                }
+            };
+
+            // Create RpoRandomCoin for note creation
+            use miden_objects::Word;
+            use miden_objects::crypto::rand::RpoRandomCoin;
+            // Create a random seed using rand
+            use rand::Rng;
+            let mut thread_rng = rand::rng();
+            let seed = Word::from([
+                thread_rng.random::<u32>(),
+                thread_rng.random::<u32>(),
+                thread_rng.random::<u32>(),
+                thread_rng.random::<u32>(),
+            ]);
+            let mut rng = RpoRandomCoin::new(seed);
+
+            let miden_note: MidenNote = mosaic_miden::note::compile_p2id_note(
+                account_id,
+                target_account,
+                amount,
+                &mut rng,
+            )?;
+
+            Ok(MosaicNote {
+                market: String::new(), // No market for funding notes
+                order,
+                miden_note,
+            })
+        }
         _ => todo!(),
     }
 }

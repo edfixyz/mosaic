@@ -9,18 +9,12 @@ use miden_client::{
     rpc::{Endpoint, TonicRpcClient},
     store::{AccountRecord, AccountStatus},
     sync::SyncSummary,
-    transaction::TransactionRequestBuilder,
 };
-use miden_lib::{
-    account::{auth::AuthRpoFalcon512, faucets::BasicFungibleFaucet},
-    note::create_p2id_note,
-};
+use miden_lib::account::{auth::AuthRpoFalcon512, faucets::BasicFungibleFaucet};
 use miden_objects::{
     Felt,
     account::{AccountBuilder, AccountStorageMode, AccountType as MidenAccountType},
-    asset::{FungibleAsset, TokenSymbol},
-    note::NoteType as MidenNoteType,
-    transaction::OutputNote,
+    asset::TokenSymbol,
 };
 use rand::{RngCore, rngs::StdRng};
 use std::path::{Path, PathBuf};
@@ -72,12 +66,6 @@ pub enum ClientCommand {
         decimals: u8,
         max_supply: u64,
         respond_to: oneshot::Sender<Result<(miden_client::account::Account, SecretKey), String>>,
-    },
-    FundAccount {
-        faucet_account_id: AccountId,
-        target_account_id: AccountId,
-        amount: u64,
-        respond_to: oneshot::Sender<Result<(), String>>,
     },
     GetAccount {
         account_id: AccountId,
@@ -186,21 +174,6 @@ impl ClientHandle {
                     .await;
                     let _ = respond_to.send(result);
                 }
-                ClientCommand::FundAccount {
-                    faucet_account_id,
-                    target_account_id,
-                    amount,
-                    respond_to,
-                } => {
-                    let result = Self::fund_account_impl(
-                        &mut client,
-                        faucet_account_id,
-                        target_account_id,
-                        amount,
-                    )
-                    .await;
-                    let _ = respond_to.send(result);
-                }
                 ClientCommand::GetAccount {
                     account_id,
                     respond_to,
@@ -297,50 +270,6 @@ impl ClientHandle {
         client.sync_state().await?;
 
         Ok((miden_account, key_pair))
-    }
-
-    /// Implementation of fund account logic using P2ID notes
-    async fn fund_account_impl(
-        client: &mut Client<FilesystemKeyStore<StdRng>>,
-        faucet_account_id: AccountId,
-        target_account_id: AccountId,
-        amount: u64,
-    ) -> Result<(), String> {
-        // Create a fungible asset from the faucet
-        let fungible_asset = FungibleAsset::new(faucet_account_id, amount)
-            .map_err(|e| format!("Failed to create fungible asset: {}", e))?;
-
-        // Create a P2ID note to send the asset to the target account
-        let p2id_note = create_p2id_note(
-            faucet_account_id,
-            target_account_id,
-            vec![fungible_asset.into()],
-            MidenNoteType::Private,
-            Felt::new(0),
-            client.rng(),
-        )
-        .map_err(|e| format!("Failed to create P2ID note: {}", e))?;
-
-        // Create a transaction request with the P2ID note as output
-        let output_notes = vec![OutputNote::Full(p2id_note)];
-        let transaction_request = TransactionRequestBuilder::new()
-            .own_output_notes(output_notes)
-            .build()
-            .map_err(|e| format!("Failed to build transaction request: {}", e))?;
-
-        // Execute the transaction
-        let tx_execution_result = client
-            .new_transaction(faucet_account_id, transaction_request)
-            .await
-            .map_err(|e| format!("Failed to execute transaction: {}", e))?;
-
-        // Submit the transaction
-        client
-            .submit_transaction(tx_execution_result)
-            .await
-            .map_err(|e| format!("Failed to submit transaction: {}", e))?;
-
-        Ok(())
     }
 
     /// Implementation of note commitment logic
@@ -467,29 +396,6 @@ impl ClientHandle {
             .send(ClientCommand::CommitNote {
                 account_id,
                 note_hex,
-                respond_to,
-            })
-            .map_err(|_| "Client thread has shut down".to_string())?;
-
-        response_rx
-            .await
-            .map_err(|_| "Client thread dropped response".to_string())?
-    }
-
-    /// Fund an account using P2ID note
-    pub async fn fund_account(
-        &self,
-        faucet_account_id: AccountId,
-        target_account_id: AccountId,
-        amount: u64,
-    ) -> Result<(), String> {
-        let (respond_to, response_rx) = oneshot::channel();
-
-        self.command_tx
-            .send(ClientCommand::FundAccount {
-                faucet_account_id,
-                target_account_id,
-                amount,
                 respond_to,
             })
             .map_err(|_| "Client thread has shut down".to_string())?;
