@@ -1,6 +1,7 @@
 pub mod account;
 pub mod client;
 pub mod note;
+pub mod store;
 pub mod transaction;
 pub mod version;
 

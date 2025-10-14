@@ -79,6 +79,9 @@ pub struct CreateNoteFromMasmRequest {
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct FlushRequest {}
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct VersionRequest {}
+
 #[derive(Clone)]
 pub struct Mosaic {
     serve: Arc<Mutex<Serve>>,
@@ -531,6 +534,25 @@ impl Mosaic {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Cache flushed successfully!\nClients cleared: {}",
             client_count
+        ))]))
+    }
+
+    #[tool(description = "Get the current Mosaic version string")]
+    async fn version(
+        &self,
+        Parameters(_req): Parameters<VersionRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        let version = mosaic_miden::version::VERSION_STRING;
+
+        tracing::info!(
+            tool = "version",
+            version = %version,
+            "Version requested"
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Mosaic version: {}",
+            version
         ))]))
     }
 }

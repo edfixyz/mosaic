@@ -38,6 +38,10 @@ impl Serve {
         self.store_path.join(dir_name)
     }
 
+    fn store_path(&self, identifier: [u8; 32], network: Network) -> PathBuf {
+        self.client_path(identifier, network).join("mosaic.sqlite3")
+    }
+
     fn check_or_create(path: &PathBuf) -> Result<bool, anyhow::Error> {
         if path.exists() {
             Ok(false)
@@ -55,32 +59,17 @@ impl Serve {
 
         // Check both testnet and localnet directories
         for network in [Network::Testnet, Network::Localnet] {
-            let path = self.client_path(identifier, network);
-            let account_id_file = path.join("account_id.txt");
+            let store_path = self.store_path(identifier, network);
 
-            if !account_id_file.exists() {
+            if !store_path.exists() {
                 continue;
             }
 
-            let contents = std::fs::read_to_string(&account_id_file)?;
+            let store = mosaic_miden::store::Store::new(&store_path)?;
+            let accounts = store.list_accounts()?;
 
-            for line in contents.lines() {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-
-                // Parse the bech32 to extract the network
-                match miden_objects::address::Address::from_bech32(line) {
-                    Ok((network_id, _)) => {
-                        let network_str = network_id.as_str().to_string();
-                        all_accounts.push((line.to_string(), network_str));
-                    }
-                    Err(_e) => {
-                        // Skip invalid entries
-                        continue;
-                    }
-                }
+            for (account_id, network_str, _typ) in accounts {
+                all_accounts.push((account_id, network_str));
             }
         }
 
@@ -109,7 +98,7 @@ impl Serve {
     pub async fn new_account(
         &mut self,
         identifier: [u8; 32],
-        _account_type: AccountType,
+        account_type: AccountType,
         network: Network,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let path = self.client_path(identifier, network);
@@ -131,14 +120,17 @@ impl Serve {
         let account_id_bech32 =
             miden_objects::address::Address::from(address).to_bech32(network_id);
 
-        let account_id_file = path.join("account_id.txt");
-        use std::fs::OpenOptions;
-        use std::io::Write;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&account_id_file)?;
-        writeln!(file, "{}", account_id_bech32)?;
+        // Store in SQLite database
+        let store_path = self.store_path(identifier, network);
+        let store = mosaic_miden::store::Store::new(&store_path)?;
+
+        let account_type_str = match account_type {
+            AccountType::Client => "Client",
+            AccountType::Desk => "Desk",
+            AccountType::Liquidity => "Liquidity",
+        };
+
+        store.insert_account(&account_id_bech32, network, account_type_str)?;
 
         Ok(account_id_bech32)
     }

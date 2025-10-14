@@ -19,3 +19,5 @@ uuid = "1.18.1"
 hex = "0.4.3"
 tracing = "0.1"
 schemars = "1.0"
+rusqlite = { version = "0.36.0", features = ["bundled"] }
+rusqlite_migration = "2.2.0"

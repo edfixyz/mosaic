@@ -1840,6 +1840,8 @@ dependencies = [
  "miden-objects",
  "rand",
  "rand_chacha",
+ "rusqlite",
+ "rusqlite_migration",
  "schemars",
  "serde",
  "serde_json",
