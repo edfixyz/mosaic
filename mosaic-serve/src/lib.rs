@@ -24,22 +24,22 @@ impl Serve {
         })
     }
 
-    fn identifier_to_string(identifier: [u8; 32]) -> String {
-        bs58::encode(identifier).into_string()
+    fn secret_to_string(secret: [u8; 32]) -> String {
+        bs58::encode(secret).into_string()
     }
 
-    fn client_path(&self, identifier: [u8; 32], network: Network) -> PathBuf {
-        let ident = Self::identifier_to_string(identifier);
+    fn client_path(&self, secret: [u8; 32], network: Network) -> PathBuf {
+        let secret_str = Self::secret_to_string(secret);
         let network_prefix = match network {
             Network::Testnet => "testnet",
             Network::Localnet => "localnet",
         };
-        let dir_name = format!("{}_{}", network_prefix, ident);
+        let dir_name = format!("{}_{}", network_prefix, secret_str);
         self.store_path.join(dir_name)
     }
 
-    fn store_path(&self, identifier: [u8; 32], network: Network) -> PathBuf {
-        self.client_path(identifier, network).join("mosaic.sqlite3")
+    fn store_path(&self, secret: [u8; 32], network: Network) -> PathBuf {
+        self.client_path(secret, network).join("mosaic.sqlite3")
     }
 
     fn check_or_create(path: &PathBuf) -> Result<bool, anyhow::Error> {
@@ -53,13 +53,13 @@ impl Serve {
 
     pub async fn list_accounts(
         &self,
-        identifier: [u8; 32],
+        secret: [u8; 32],
     ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
         let mut all_accounts = Vec::new();
 
         // Check both testnet and localnet directories
         for network in [Network::Testnet, Network::Localnet] {
-            let store_path = self.store_path(identifier, network);
+            let store_path = self.store_path(secret, network);
 
             if !store_path.exists() {
                 continue;
@@ -78,33 +78,33 @@ impl Serve {
 
     pub async fn get_client(
         &mut self,
-        identifier: [u8; 32],
+        secret: [u8; 32],
         network: Network,
     ) -> Result<ClientHandle, Box<dyn std::error::Error>> {
-        if let Some(client_handle) = self.clients.get(&(identifier, network)) {
+        if let Some(client_handle) = self.clients.get(&(secret, network)) {
             return Ok(client_handle.clone());
         }
 
-        let path = self.client_path(identifier, network);
+        let path = self.client_path(secret, network);
 
         let client_handle = ClientHandle::spawn(path, network).await?;
 
         self.clients
-            .insert((identifier, network), client_handle.clone());
+            .insert((secret, network), client_handle.clone());
 
         Ok(client_handle)
     }
 
     pub async fn new_account(
         &mut self,
-        identifier: [u8; 32],
+        secret: [u8; 32],
         account_type: AccountType,
         network: Network,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let path = self.client_path(identifier, network);
+        let path = self.client_path(secret, network);
         Self::check_or_create(&path)?;
 
-        let client_handle = self.get_client(identifier, network).await?;
+        let client_handle = self.get_client(secret, network).await?;
 
         let account = client_handle
             .create_account()
@@ -122,7 +122,7 @@ impl Serve {
             miden_objects::address::Address::from(address).to_bech32(network_id);
 
         // Store in SQLite database
-        let store_path = self.store_path(identifier, network);
+        let store_path = self.store_path(secret, network);
         let store = mosaic_miden::store::Store::new(&store_path)?;
 
         let account_type_str = match account_type {
@@ -139,16 +139,16 @@ impl Serve {
 
     pub async fn new_faucet_account(
         &mut self,
-        identifier: [u8; 32],
+        secret: [u8; 32],
         network: Network,
         token_symbol: String,
         decimals: u8,
         max_supply: u64,
     ) -> Result<String, Box<dyn std::error::Error>> {
-        let path = self.client_path(identifier, network);
+        let path = self.client_path(secret, network);
         Self::check_or_create(&path)?;
 
-        let client_handle = self.get_client(identifier, network).await?;
+        let client_handle = self.get_client(secret, network).await?;
 
         let account = client_handle
             .create_faucet_account(token_symbol, decimals, max_supply)
@@ -165,7 +165,7 @@ impl Serve {
             miden_objects::address::Address::from(address).to_bech32(network_id);
 
         // Store in SQLite database
-        let store_path = self.store_path(identifier, network);
+        let store_path = self.store_path(secret, network);
         let store = mosaic_miden::store::Store::new(&store_path)?;
 
         store.insert_account(&account_id_bech32, network, "Faucet")?;
@@ -175,12 +175,12 @@ impl Serve {
 
     pub async fn create_private_note(
         &mut self,
-        identifier: [u8; 32],
+        secret: [u8; 32],
         network: Network,
         account_id_bech32: String,
         order: mosaic_fi::note::Order,
     ) -> Result<MosaicNote, Box<dyn std::error::Error>> {
-        let client_handle = self.get_client(identifier, network).await?;
+        let client_handle = self.get_client(secret, network).await?;
 
         let (_network_id, address) =
             miden_objects::address::Address::from_bech32(&account_id_bech32)?;
@@ -211,16 +211,16 @@ impl Serve {
 
     pub async fn create_note_from_masm(
         &mut self,
-        identifier: [u8; 32],
+        secret: [u8; 32],
         network: Network,
         account_id_bech32: String,
         note_type: mosaic_miden::note::NoteType,
         program: String,
         libraries: Vec<(String, String)>,
         inputs: Vec<(String, mosaic_miden::note::Value)>,
-        secret: Option<[u64; 4]>,
+        note_secret: Option<[u64; 4]>,
     ) -> Result<mosaic_miden::note::MidenNote, Box<dyn std::error::Error>> {
-        let client_handle = self.get_client(identifier, network).await?;
+        let client_handle = self.get_client(secret, network).await?;
 
         let (_network_id, address) =
             miden_objects::address::Address::from_bech32(&account_id_bech32)?;
@@ -247,15 +247,15 @@ impl Serve {
             libraries,
         };
 
-        // Use default secret if not provided
-        let secret_word = if let Some(secret_arr) = secret {
+        // Use default note_secret if not provided
+        let secret_word = if let Some(note_secret_arr) = note_secret {
             // Convert [u64; 4] to Word (which is [Felt; 4])
             use miden_objects::Felt;
             [
-                Felt::new(secret_arr[0]),
-                Felt::new(secret_arr[1]),
-                Felt::new(secret_arr[2]),
-                Felt::new(secret_arr[3]),
+                Felt::new(note_secret_arr[0]),
+                Felt::new(note_secret_arr[1]),
+                Felt::new(note_secret_arr[2]),
+                Felt::new(note_secret_arr[3]),
             ]
         } else {
             *miden_objects::Word::default()

@@ -19,8 +19,8 @@ use tokio::sync::Mutex;
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateAccountRequest {
-    /// 32-byte identifier as a hex string (64 characters)
-    pub identifier: String,
+    /// 32-byte secret as a hex string (64 characters)
+    pub secret: String,
     /// Account type: "Client", "Desk", or "Liquidity"
     pub account_type: String,
     /// Network: "Testnet" or "Localnet"
@@ -29,8 +29,8 @@ pub struct CreateAccountRequest {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateFaucetAccountRequest {
-    /// 32-byte identifier as a hex string (64 characters)
-    pub identifier: String,
+    /// 32-byte secret as a hex string (64 characters)
+    pub secret: String,
     /// Token symbol (e.g., "MID")
     pub token_symbol: String,
     /// Number of decimals for the token
@@ -43,22 +43,22 @@ pub struct CreateFaucetAccountRequest {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListAccountsRequest {
-    /// 32-byte identifier as a hex string (64 characters)
-    pub identifier: String,
+    /// 32-byte secret as a hex string (64 characters)
+    pub secret: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ClientSyncRequest {
-    /// 32-byte identifier as a hex string (64 characters)
-    pub identifier: String,
+    /// 32-byte secret as a hex string (64 characters)
+    pub secret: String,
     /// Network: "Testnet" or "Localnet"
     pub network: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CreatePrivateNoteRequest {
-    /// 32-byte identifier as a hex string (64 characters)
-    pub identifier: String,
+    /// 32-byte secret as a hex string (64 characters)
+    pub secret: String,
     /// Network: "Testnet" or "Localnet"
     pub network: String,
     /// Account ID in bech32 format
@@ -69,8 +69,8 @@ pub struct CreatePrivateNoteRequest {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateNoteFromMasmRequest {
-    /// 32-byte identifier as a hex string (64 characters)
-    pub identifier: String,
+    /// 32-byte secret as a hex string (64 characters)
+    pub secret: String,
     /// Network: "Testnet" or "Localnet"
     pub network: String,
     /// Account ID in bech32 format
@@ -85,9 +85,9 @@ pub struct CreateNoteFromMasmRequest {
     /// Optional inputs as array of [name, value] pairs where value is {"Word": [u64, u64, u64, u64]} or {"Element": u64}
     #[serde(default)]
     pub inputs: Vec<(String, mosaic_miden::note::Value)>,
-    /// Optional secret as 4-element array [u64, u64, u64, u64]
+    /// Optional note_secret as 4-element array [u64, u64, u64, u64]
     #[serde(default)]
-    pub secret: Option<[u64; 4]>,
+    pub note_secret: Option<[u64; 4]>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -114,29 +114,29 @@ impl Mosaic {
         }
     }
 
-    #[tool(description = "Create a new Mosaic account with the specified identifier and type")]
+    #[tool(description = "Create a new Mosaic account with the specified secret and type")]
     async fn create_account(
         &self,
         Parameters(req): Parameters<CreateAccountRequest>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex identifier
-        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
-            let error_msg = format!("Invalid identifier hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse identifier");
+        // Parse hex secret
+        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
+            let error_msg = format!("Invalid secret hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse secret");
             McpError::invalid_params(error_msg, None)
         })?;
 
-        if identifier_bytes.len() != 32 {
+        if secret_bytes.len() != 32 {
             let error_msg = format!(
-                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
-                identifier_bytes.len()
+                "Secret must be 32 bytes (64 hex chars), got {} bytes",
+                secret_bytes.len()
             );
-            tracing::error!(error = %error_msg, "Invalid identifier length");
+            tracing::error!(error = %error_msg, "Invalid secret length");
             return Err(McpError::invalid_params(error_msg, None));
         }
 
-        let mut identifier = [0u8; 32];
-        identifier.copy_from_slice(&identifier_bytes);
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&secret_bytes);
 
         // Parse account type
         let account_type = match req.account_type.as_str() {
@@ -171,7 +171,7 @@ impl Mosaic {
         let account_id_bech32 = {
             let mut serve = self.serve.lock().await;
             serve
-                .new_account(identifier, account_type, network)
+                .new_account(secret, account_type, network)
                 .await
                 .map_err(|e| {
                     let error_msg = format!("Failed to create account: {}", e);
@@ -194,8 +194,8 @@ impl Mosaic {
         );
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Account created successfully!\nIdentifier: {}\nAccount ID (bech32): {}",
-            req.identifier, account_id_bech32
+            "Account created successfully!\nSecret: {}\nAccount ID (bech32): {}",
+            req.secret, account_id_bech32
         ))]))
     }
 
@@ -206,24 +206,24 @@ impl Mosaic {
         &self,
         Parameters(req): Parameters<CreateFaucetAccountRequest>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex identifier
-        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
-            let error_msg = format!("Invalid identifier hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse identifier");
+        // Parse hex secret
+        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
+            let error_msg = format!("Invalid secret hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse secret");
             McpError::invalid_params(error_msg, None)
         })?;
 
-        if identifier_bytes.len() != 32 {
+        if secret_bytes.len() != 32 {
             let error_msg = format!(
-                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
-                identifier_bytes.len()
+                "Secret must be 32 bytes (64 hex chars), got {} bytes",
+                secret_bytes.len()
             );
-            tracing::error!(error = %error_msg, "Invalid identifier length");
+            tracing::error!(error = %error_msg, "Invalid secret length");
             return Err(McpError::invalid_params(error_msg, None));
         }
 
-        let mut identifier = [0u8; 32];
-        identifier.copy_from_slice(&identifier_bytes);
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&secret_bytes);
 
         // Parse network
         let network = match req.network.as_str() {
@@ -244,7 +244,7 @@ impl Mosaic {
             let mut serve = self.serve.lock().await;
             serve
                 .new_faucet_account(
-                    identifier,
+                    secret,
                     network,
                     req.token_symbol.clone(),
                     req.decimals,
@@ -274,41 +274,39 @@ impl Mosaic {
         );
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Faucet account created successfully!\nIdentifier: {}\nAccount ID (bech32): {}\nToken: {} (decimals: {}, max supply: {})",
-            req.identifier, account_id_bech32, req.token_symbol, req.decimals, req.max_supply
+            "Faucet account created successfully!\nSecret: {}\nAccount ID (bech32): {}\nToken: {} (decimals: {}, max supply: {})",
+            req.secret, account_id_bech32, req.token_symbol, req.decimals, req.max_supply
         ))]))
     }
 
-    #[tool(
-        description = "List all account IDs (bech32) with their networks for a given identifier"
-    )]
+    #[tool(description = "List all account IDs (bech32) with their networks for a given secret")]
     async fn list_accounts(
         &self,
         Parameters(req): Parameters<ListAccountsRequest>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex identifier
-        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
-            let error_msg = format!("Invalid identifier hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse identifier");
+        // Parse hex secret
+        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
+            let error_msg = format!("Invalid secret hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse secret");
             McpError::invalid_params(error_msg, None)
         })?;
 
-        if identifier_bytes.len() != 32 {
+        if secret_bytes.len() != 32 {
             let error_msg = format!(
-                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
-                identifier_bytes.len()
+                "Secret must be 32 bytes (64 hex chars), got {} bytes",
+                secret_bytes.len()
             );
-            tracing::error!(error = %error_msg, "Invalid identifier length");
+            tracing::error!(error = %error_msg, "Invalid secret length");
             return Err(McpError::invalid_params(error_msg, None));
         }
 
-        let mut identifier = [0u8; 32];
-        identifier.copy_from_slice(&identifier_bytes);
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&secret_bytes);
 
         // List accounts
         let accounts = {
             let serve = self.serve.lock().await;
-            serve.list_accounts(identifier).await.map_err(|e| {
+            serve.list_accounts(secret).await.map_err(|e| {
                 let error_msg = format!("Failed to list accounts: {}", e);
                 tracing::error!(error = %error_msg, "Failed to list accounts");
                 McpError::internal_error(error_msg, None)
@@ -323,12 +321,12 @@ impl Mosaic {
 
         if accounts.is_empty() {
             return Ok(CallToolResult::success(vec![Content::text(format!(
-                "No accounts found for identifier: {}",
-                req.identifier
+                "No accounts found for secret: {}",
+                req.secret
             ))]));
         }
 
-        let mut response = format!("Accounts for identifier {}:\n\n", req.identifier);
+        let mut response = format!("Accounts for secret {}:\n\n", req.secret);
         for (i, (account_id, network)) in accounts.iter().enumerate() {
             response.push_str(&format!(
                 "{}. Account ID: {}\n   Network: {}\n\n",
@@ -341,31 +339,29 @@ impl Mosaic {
         Ok(CallToolResult::success(vec![Content::text(response)]))
     }
 
-    #[tool(
-        description = "Sync a client's state with the network for a given identifier and network"
-    )]
+    #[tool(description = "Sync a client's state with the network for a given secret and network")]
     async fn client_sync(
         &self,
         Parameters(req): Parameters<ClientSyncRequest>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex identifier
-        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
-            let error_msg = format!("Invalid identifier hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse identifier");
+        // Parse hex secret
+        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
+            let error_msg = format!("Invalid secret hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse secret");
             McpError::invalid_params(error_msg, None)
         })?;
 
-        if identifier_bytes.len() != 32 {
+        if secret_bytes.len() != 32 {
             let error_msg = format!(
-                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
-                identifier_bytes.len()
+                "Secret must be 32 bytes (64 hex chars), got {} bytes",
+                secret_bytes.len()
             );
-            tracing::error!(error = %error_msg, "Invalid identifier length");
+            tracing::error!(error = %error_msg, "Invalid secret length");
             return Err(McpError::invalid_params(error_msg, None));
         }
 
-        let mut identifier = [0u8; 32];
-        identifier.copy_from_slice(&identifier_bytes);
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&secret_bytes);
 
         // Parse network
         let network = match req.network.as_str() {
@@ -384,7 +380,7 @@ impl Mosaic {
         // Get client handle
         let client_handle = {
             let mut serve = self.serve.lock().await;
-            serve.get_client(identifier, network).await.map_err(|e| {
+            serve.get_client(secret, network).await.map_err(|e| {
                 let error_msg = format!("Failed to get client: {}", e);
                 tracing::error!(error = %error_msg, network = %req.network, "Failed to get client");
                 McpError::internal_error(error_msg, None)
@@ -410,8 +406,8 @@ impl Mosaic {
         );
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Client synced successfully!\nIdentifier: {}\nNetwork: {}\nBlock: {}\nNew public notes: {}\nCommitted notes: {}\nConsumed notes: {}\nUpdated accounts: {}",
-            req.identifier,
+            "Client synced successfully!\nSecret: {}\nNetwork: {}\nBlock: {}\nNew public notes: {}\nCommitted notes: {}\nConsumed notes: {}\nUpdated accounts: {}",
+            req.secret,
             req.network,
             sync_result.block_num,
             sync_result.new_public_notes.len(),
@@ -422,30 +418,30 @@ impl Mosaic {
     }
 
     #[tool(
-        description = "Create a private note from an order for a given identifier, network, and account"
+        description = "Create a private note from an order for a given secret, network, and account"
     )]
     async fn create_private_note(
         &self,
         Parameters(req): Parameters<CreatePrivateNoteRequest>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex identifier
-        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
-            let error_msg = format!("Invalid identifier hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse identifier");
+        // Parse hex secret
+        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
+            let error_msg = format!("Invalid secret hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse secret");
             McpError::invalid_params(error_msg, None)
         })?;
 
-        if identifier_bytes.len() != 32 {
+        if secret_bytes.len() != 32 {
             let error_msg = format!(
-                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
-                identifier_bytes.len()
+                "Secret must be 32 bytes (64 hex chars), got {} bytes",
+                secret_bytes.len()
             );
-            tracing::error!(error = %error_msg, "Invalid identifier length");
+            tracing::error!(error = %error_msg, "Invalid secret length");
             return Err(McpError::invalid_params(error_msg, None));
         }
 
-        let mut identifier = [0u8; 32];
-        identifier.copy_from_slice(&identifier_bytes);
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&secret_bytes);
 
         // Parse network
         let network = match req.network.as_str() {
@@ -468,7 +464,7 @@ impl Mosaic {
         let mosaic_note = {
             let mut serve = self.serve.lock().await;
             serve
-                .create_private_note(identifier, network, req.account_id.clone(), order)
+                .create_private_note(secret, network, req.account_id.clone(), order)
                 .await
                 .map_err(|e| {
                     let error_msg = format!("Failed to create private note: {}", e);
@@ -486,7 +482,7 @@ impl Mosaic {
             tool = "create_private_note",
             account_id = %req.account_id,
             network = %req.network,
-            market = %mosaic_note.market,
+            recipient = ?mosaic_note.recipient,
             "Created and committed private note"
         );
 
@@ -498,36 +494,36 @@ impl Mosaic {
         })?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Private note created successfully!\nIdentifier: {}\nNetwork: {}\nAccount ID: {}\n\nNote:\n{}",
-            req.identifier, req.network, req.account_id, note_json
+            "Private note created successfully!\nSecret: {}\nNetwork: {}\nAccount ID: {}\n\nNote:\n{}",
+            req.secret, req.network, req.account_id, note_json
         ))]))
     }
 
     #[tool(
-        description = "Create a note from low-level MASM code and inputs for a given identifier, network, and account"
+        description = "Create a note from low-level MASM code and inputs for a given secret, network, and account"
     )]
     async fn create_note_from_masm(
         &self,
         Parameters(req): Parameters<CreateNoteFromMasmRequest>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex identifier
-        let identifier_bytes = hex::decode(&req.identifier).map_err(|e| {
-            let error_msg = format!("Invalid identifier hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse identifier");
+        // Parse hex secret
+        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
+            let error_msg = format!("Invalid secret hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse secret");
             McpError::invalid_params(error_msg, None)
         })?;
 
-        if identifier_bytes.len() != 32 {
+        if secret_bytes.len() != 32 {
             let error_msg = format!(
-                "Identifier must be 32 bytes (64 hex chars), got {} bytes",
-                identifier_bytes.len()
+                "Secret must be 32 bytes (64 hex chars), got {} bytes",
+                secret_bytes.len()
             );
-            tracing::error!(error = %error_msg, "Invalid identifier length");
+            tracing::error!(error = %error_msg, "Invalid secret length");
             return Err(McpError::invalid_params(error_msg, None));
         }
 
-        let mut identifier = [0u8; 32];
-        identifier.copy_from_slice(&identifier_bytes);
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&secret_bytes);
 
         // Parse network
         let network = match req.network.as_str() {
@@ -566,14 +562,14 @@ impl Mosaic {
             let mut serve = self.serve.lock().await;
             serve
                 .create_note_from_masm(
-                    identifier,
+                    secret,
                     network,
                     req.account_id.clone(),
                     note_type,
                     req.program,
                     req.libraries,
                     req.inputs,
-                    req.secret,
+                    req.note_secret,
                 )
                 .await
                 .map_err(|e| {
@@ -604,8 +600,8 @@ impl Mosaic {
         })?;
 
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "Note created from MASM successfully!\nIdentifier: {}\nNetwork: {}\nAccount ID: {}\n\nNote:\n{}",
-            req.identifier, req.network, req.account_id, note_json
+            "Note created from MASM successfully!\nSecret: {}\nNetwork: {}\nAccount ID: {}\n\nNote:\n{}",
+            req.secret, req.network, req.account_id, note_json
         ))]))
     }
 
@@ -664,7 +660,7 @@ impl ServerHandler for Mosaic {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("Mosaic MCP server. Tools: create_account - Create a new Mosaic account with a 32-byte identifier (hex string), account type (Client, Desk, or Liquidity), and network (Testnet or Localnet); list_accounts - List all account IDs (bech32) with their networks for a given identifier; client_sync - Sync a client's state with the network; create_private_note - Create a private note from an order for a given identifier, network, and account.".to_string()),
+            instructions: Some("Mosaic MCP server. Tools: create_account - Create a new Mosaic account with a 32-byte secret (hex string), account type (Client, Desk, or Liquidity), and network (Testnet or Localnet); list_accounts - List all account IDs (bech32) with their networks for a given secret; client_sync - Sync a client's state with the network; create_private_note - Create a private note from an order for a given secret, network, and account.".to_string()),
         }
     }
 

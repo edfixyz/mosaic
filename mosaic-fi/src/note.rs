@@ -15,6 +15,11 @@ pub type Amount = u64;
 pub type Price = u64;
 
 #[derive(PartialEq, Serialize, Deserialize, schemars::JsonSchema, Debug, Clone)]
+pub enum Recipient {
+    AccountId(String),
+}
+
+#[derive(PartialEq, Serialize, Deserialize, schemars::JsonSchema, Debug, Clone)]
 pub enum Order {
     // Notes emited by Desk, consumed by Client
     KYCPassed {
@@ -68,7 +73,7 @@ pub enum Order {
 
 #[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
 pub struct MosaicNote {
-    pub market: Market,
+    pub recipient: Recipient,
     pub order: Order,
     pub miden_note: MidenNote,
 }
@@ -104,8 +109,12 @@ pub fn compile_note_from_account_id(
             let miden_note: MidenNote =
                 mosaic_miden::note::compile_note(abs_note, account_id, secret, inputs)?;
 
+            // For LiquidityOffer, the recipient will be the desk
+            // We use a placeholder format for now: "desk:<market>"
+            let recipient_id = format!("desk:{}", market);
+
             Ok(MosaicNote {
-                market: market.to_string(),
+                recipient: Recipient::AccountId(recipient_id),
                 order,
                 miden_note,
             })
@@ -150,7 +159,7 @@ pub fn compile_note_from_account_id(
             )?;
 
             Ok(MosaicNote {
-                market: String::new(), // No market for funding notes
+                recipient: Recipient::AccountId(target_account_id.clone()),
                 order,
                 miden_note,
             })
