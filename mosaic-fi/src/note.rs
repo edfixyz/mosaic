@@ -58,6 +58,12 @@ pub enum Order {
         amount: Amount,
         price: Price,
     },
+
+    // Notes emitted by Faucet, consumed by Client (P2ID note)
+    FundAccount {
+        target_account_id: String, // bech32 format
+        amount: Amount,
+    },
 }
 
 #[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]

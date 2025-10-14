@@ -173,6 +173,52 @@ impl Serve {
         Ok(account_id_bech32)
     }
 
+    pub async fn fund_account(
+        &mut self,
+        identifier: [u8; 32],
+        network: Network,
+        faucet_account_id_bech32: String,
+        target_account_id_bech32: String,
+        amount: u64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let client_handle = self.get_client(identifier, network).await?;
+
+        // Parse faucet account ID
+        let (_network_id, faucet_address) =
+            miden_objects::address::Address::from_bech32(&faucet_account_id_bech32)?;
+        let faucet_account_id = match faucet_address {
+            miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
+            _ => {
+                return Err(format!(
+                    "Invalid address type for faucet account ID: {}",
+                    faucet_account_id_bech32
+                )
+                .into());
+            }
+        };
+
+        // Parse target account ID
+        let (_network_id, target_address) =
+            miden_objects::address::Address::from_bech32(&target_account_id_bech32)?;
+        let target_account_id = match target_address {
+            miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
+            _ => {
+                return Err(format!(
+                    "Invalid address type for target account ID: {}",
+                    target_account_id_bech32
+                )
+                .into());
+            }
+        };
+
+        client_handle
+            .fund_account(faucet_account_id, target_account_id, amount)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to fund account: {}", e))?;
+
+        Ok(())
+    }
+
     pub async fn create_private_note(
         &mut self,
         identifier: [u8; 32],
