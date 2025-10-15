@@ -86,6 +86,7 @@ pub enum ClientCommand {
     },
     GetAccountStatus {
         account_id: AccountId,
+        network: Network,
         respond_to: oneshot::Sender<Result<crate::AccountStatusData, String>>,
     },
     Shutdown,
@@ -218,9 +219,10 @@ impl ClientHandle {
                 }
                 ClientCommand::GetAccountStatus {
                     account_id,
+                    network,
                     respond_to,
                 } => {
-                    let result = Self::get_account_status_impl(&client, account_id).await;
+                    let result = Self::get_account_status_impl(&client, account_id, network).await;
                     let _ = respond_to.send(result);
                 }
                 ClientCommand::Shutdown => {
@@ -435,6 +437,7 @@ impl ClientHandle {
     async fn get_account_status_impl(
         client: &Client<FilesystemKeyStore<StdRng>>,
         account_id: AccountId,
+        network: Network,
     ) -> Result<crate::AccountStatusData, String> {
         use miden_objects::asset::Asset;
 
@@ -448,14 +451,14 @@ impl ClientHandle {
         let account: miden_client::account::Account = account_record.into();
 
         // Get account type from the account ID's storage mode
-        let account_type = if account_id.is_private() {
+        let storage_mode = if account_id.is_private() {
             "Private"
         } else {
             "Public"
         };
 
-        // For bech32 encoding, we need a network ID. Since we don't have it in this context,
-        // we'll use hex representation for account IDs and faucet IDs
+        // Get network ID for bech32 encoding
+        let network_id = network.to_network_id();
 
         // Iterate through assets
         let mut assets = Vec::new();
@@ -463,18 +466,22 @@ impl ClientHandle {
             match asset {
                 Asset::Fungible(fungible_asset) => {
                     let faucet_id = fungible_asset.faucet_id();
-                    // Use hex format instead of bech32 since we don't have network context
-                    let faucet_hex = format!("0x{}", faucet_id.to_hex());
+                    // Convert to bech32 format
+                    let faucet_address = miden_objects::address::AccountIdAddress::new(
+                        faucet_id,
+                        miden_objects::address::AddressInterface::Unspecified,
+                    );
+                    let faucet_bech32 =
+                        miden_objects::address::Address::from(faucet_address).to_bech32(network_id);
 
                     assets.push(crate::AssetData {
-                        faucet: faucet_hex,
+                        faucet: faucet_bech32,
                         amount: fungible_asset.amount(),
                         fungible: true,
                     });
                 }
                 Asset::NonFungible(_non_fungible_asset) => {
-                    // For non-fungible assets, we'll skip them for now as they're more complex
-                    // and the faucet_id_prefix doesn't directly convert to AccountId
+                    // For non-fungible assets, we'll use a placeholder
                     // In a production system, you'd want to properly handle this
                     assets.push(crate::AssetData {
                         faucet: "non-fungible".to_string(),
@@ -485,12 +492,17 @@ impl ClientHandle {
             }
         }
 
-        // Get account ID in hex format
-        let account_id_hex = format!("0x{}", account_id.to_hex());
+        // Get account ID in bech32 format
+        let account_address = miden_objects::address::AccountIdAddress::new(
+            account_id,
+            miden_objects::address::AddressInterface::Unspecified,
+        );
+        let account_id_bech32 =
+            miden_objects::address::Address::from(account_address).to_bech32(network_id);
 
         Ok(crate::AccountStatusData {
-            account_id: account_id_hex,
-            storage_mode: account_type.to_string(),
+            account_id: account_id_bech32,
+            storage_mode: storage_mode.to_string(),
             account_type: String::new(), // Will be filled in by the serve layer from the store
             assets,
         })
@@ -640,12 +652,14 @@ impl ClientHandle {
     pub async fn get_account_status(
         &self,
         account_id: AccountId,
+        network: Network,
     ) -> Result<crate::AccountStatusData, String> {
         let (respond_to, response_rx) = oneshot::channel();
 
         self.command_tx
             .send(ClientCommand::GetAccountStatus {
                 account_id,
+                network,
                 respond_to,
             })
             .map_err(|_| "Client thread has shut down".to_string())?;

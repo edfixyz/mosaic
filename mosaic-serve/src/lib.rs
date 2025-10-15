@@ -408,7 +408,7 @@ impl Serve {
 
         // Get account status from client
         let mut account_status = client_handle
-            .get_account_status(account_id)
+            .get_account_status(account_id, network)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get account status: {}", e))?;
 
