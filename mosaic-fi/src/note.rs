@@ -1,6 +1,9 @@
 use miden_objects::Word;
 use miden_objects::account::AccountId;
-use mosaic_miden::note::{MidenAbstractNote, MidenNote, NoteType, Value};
+use mosaic_miden::{
+    MidenTransactionId,
+    note::{MidenAbstractNote, MidenNote, NoteType, Value},
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(PartialEq, Serialize, Deserialize, schemars::JsonSchema, Debug, Clone, Copy)]
@@ -13,6 +16,11 @@ pub type Market = String;
 pub type UUID = u128;
 pub type Amount = u64;
 pub type Price = u64;
+
+#[derive(PartialEq, Serialize, Deserialize, schemars::JsonSchema, Debug, Clone)]
+pub enum Recipient {
+    AccountId(String),
+}
 
 #[derive(PartialEq, Serialize, Deserialize, schemars::JsonSchema, Debug, Clone)]
 pub enum Order {
@@ -58,11 +66,25 @@ pub enum Order {
         amount: Amount,
         price: Price,
     },
+
+    // Notes emitted by Faucet, consumed by Client (P2ID note)
+    FundAccount {
+        target_account_id: String, // bech32 format
+        amount: Amount,
+    },
+}
+
+#[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
+pub enum MosaicNoteStatus {
+    New,
+    Committed(MidenTransactionId),
+    Consumed(MidenTransactionId, MidenTransactionId),
 }
 
 #[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
 pub struct MosaicNote {
-    pub market: Market,
+    pub status: MosaicNoteStatus,
+    pub recipient: Recipient,
     pub order: Order,
     pub miden_note: MidenNote,
 }
@@ -98,8 +120,59 @@ pub fn compile_note_from_account_id(
             let miden_note: MidenNote =
                 mosaic_miden::note::compile_note(abs_note, account_id, secret, inputs)?;
 
+            // For LiquidityOffer, the recipient will be the desk
+            // We use a placeholder format for now: "desk:<market>"
+            let recipient_id = format!("desk:{}", market);
+
             Ok(MosaicNote {
-                market: market.to_string(),
+                status: MosaicNoteStatus::New,
+                recipient: Recipient::AccountId(recipient_id),
+                order,
+                miden_note,
+            })
+        }
+        Order::FundAccount {
+            ref target_account_id,
+            amount,
+        } => {
+            // Parse target account ID from bech32
+            let (_network_id, address) =
+                miden_objects::address::Address::from_bech32(target_account_id)?;
+            let target_account = match address {
+                miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
+                _ => {
+                    return Err(format!(
+                        "Invalid address type for target account ID: {}",
+                        target_account_id
+                    )
+                    .into());
+                }
+            };
+
+            // Create RpoRandomCoin for note creation
+            use miden_objects::Word;
+            use miden_objects::crypto::rand::RpoRandomCoin;
+            // Create a random seed using rand
+            use rand::Rng;
+            let mut thread_rng = rand::rng();
+            let seed = Word::from([
+                thread_rng.random::<u32>(),
+                thread_rng.random::<u32>(),
+                thread_rng.random::<u32>(),
+                thread_rng.random::<u32>(),
+            ]);
+            let mut rng = RpoRandomCoin::new(seed);
+
+            let miden_note: MidenNote = mosaic_miden::note::compile_p2id_note(
+                account_id,
+                target_account,
+                amount,
+                &mut rng,
+            )?;
+
+            Ok(MosaicNote {
+                status: MosaicNoteStatus::New,
+                recipient: Recipient::AccountId(target_account_id.clone()),
                 order,
                 miden_note,
             })

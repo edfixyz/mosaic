@@ -1,4 +1,4 @@
-use crate::Network;
+use crate::{MidenTransactionId, Network};
 use miden_client::{
     Client,
     account::{AccountHeader, AccountId, component::BasicWallet},
@@ -10,8 +10,12 @@ use miden_client::{
     store::{AccountRecord, AccountStatus},
     sync::SyncSummary,
 };
-use miden_lib::account::auth::AuthRpoFalcon512;
-use miden_objects::account::{AccountBuilder, AccountStorageMode, AccountType as MidenAccountType};
+use miden_lib::account::{auth::AuthRpoFalcon512, faucets::BasicFungibleFaucet};
+use miden_objects::{
+    Felt,
+    account::{AccountBuilder, AccountStorageMode, AccountType as MidenAccountType},
+    asset::TokenSymbol,
+};
 use rand::{RngCore, rngs::StdRng};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -35,7 +39,7 @@ pub async fn create_client(
     let timeout_ms = 10_000;
     let rpc_api = Arc::new(TonicRpcClient::new(&endpoint, timeout_ms));
     let keystore_path = path.join("keystore");
-    let sqlite_path = path.join("miden_store.sqlite3");
+    let sqlite_path = path.join("miden.sqlite3");
     let keystore = Arc::new(FilesystemKeyStore::new(keystore_path)?);
 
     let client = ClientBuilder::new()
@@ -57,6 +61,12 @@ pub enum ClientCommand {
     CreateAccount {
         respond_to: oneshot::Sender<Result<(miden_client::account::Account, SecretKey), String>>,
     },
+    CreateFaucetAccount {
+        token_symbol: String,
+        decimals: u8,
+        max_supply: u64,
+        respond_to: oneshot::Sender<Result<(miden_client::account::Account, SecretKey), String>>,
+    },
     GetAccount {
         account_id: AccountId,
         respond_to: oneshot::Sender<Result<Option<AccountRecord>, String>>,
@@ -67,7 +77,17 @@ pub enum ClientCommand {
     CommitNote {
         account_id: AccountId,
         note_hex: String,
-        respond_to: oneshot::Sender<Result<(), String>>,
+        respond_to: oneshot::Sender<Result<MidenTransactionId, String>>,
+    },
+    ConsumeNote {
+        account_id: AccountId,
+        note_hex: String,
+        respond_to: oneshot::Sender<Result<MidenTransactionId, String>>,
+    },
+    GetAccountStatus {
+        account_id: AccountId,
+        network: Network,
+        respond_to: oneshot::Sender<Result<crate::AccountStatusData, String>>,
     },
     Shutdown,
 }
@@ -149,6 +169,21 @@ impl ClientHandle {
                     let result = Self::create_account_impl(&mut client).await;
                     let _ = respond_to.send(result);
                 }
+                ClientCommand::CreateFaucetAccount {
+                    token_symbol,
+                    decimals,
+                    max_supply,
+                    respond_to,
+                } => {
+                    let result = Self::create_faucet_account_impl(
+                        &mut client,
+                        &token_symbol,
+                        decimals,
+                        max_supply,
+                    )
+                    .await;
+                    let _ = respond_to.send(result);
+                }
                 ClientCommand::GetAccount {
                     account_id,
                     respond_to,
@@ -172,6 +207,22 @@ impl ClientHandle {
                     respond_to,
                 } => {
                     let result = Self::commit_note_impl(&mut client, account_id, &note_hex).await;
+                    let _ = respond_to.send(result);
+                }
+                ClientCommand::ConsumeNote {
+                    account_id,
+                    note_hex,
+                    respond_to,
+                } => {
+                    let result = Self::consume_note_impl(&mut client, account_id, &note_hex).await;
+                    let _ = respond_to.send(result);
+                }
+                ClientCommand::GetAccountStatus {
+                    account_id,
+                    network,
+                    respond_to,
+                } => {
+                    let result = Self::get_account_status_impl(&client, account_id, network).await;
                     let _ = respond_to.send(result);
                 }
                 ClientCommand::Shutdown => {
@@ -204,6 +255,45 @@ impl ClientHandle {
             .add_account(&miden_account, Some(seed), false)
             .await
             .map_err(|e| format!("Add account failed: {}", e))?;
+        client.sync_state().await?;
+
+        Ok((miden_account, key_pair))
+    }
+
+    /// Implementation of faucet account creation logic
+    async fn create_faucet_account_impl(
+        client: &mut Client<FilesystemKeyStore<StdRng>>,
+        token_symbol: &str,
+        decimals: u8,
+        max_supply: u64,
+    ) -> Result<(miden_client::account::Account, SecretKey), String> {
+        let mut init_seed = [0u8; 32];
+        client.rng().fill_bytes(&mut init_seed);
+
+        let symbol =
+            TokenSymbol::new(token_symbol).map_err(|e| format!("Invalid token symbol: {}", e))?;
+        let max_supply_felt = Felt::new(max_supply);
+
+        let key_pair = SecretKey::with_rng(client.rng());
+
+        let builder = AccountBuilder::new(init_seed)
+            .account_type(MidenAccountType::FungibleFaucet)
+            .storage_mode(AccountStorageMode::Public)
+            .with_auth_component(AuthRpoFalcon512::new(key_pair.public_key()))
+            .with_component(
+                BasicFungibleFaucet::new(symbol, decimals, max_supply_felt)
+                    .map_err(|e| format!("Failed to create faucet component: {}", e))?,
+            );
+
+        let (miden_account, seed) = builder
+            .build()
+            .map_err(|e| format!("Account build failed: {}", e))?;
+
+        client
+            .add_account(&miden_account, Some(seed), false)
+            .await
+            .map_err(|e| format!("Add account failed: {}", e))?;
+        client.sync_state().await?;
 
         Ok((miden_account, key_pair))
     }
@@ -213,7 +303,7 @@ impl ClientHandle {
         client: &mut Client<FilesystemKeyStore<StdRng>>,
         account_id: AccountId,
         note_hex: &str,
-    ) -> Result<(), String> {
+    ) -> Result<MidenTransactionId, String> {
         use crate::note::MidenNote;
 
         let miden_note = MidenNote {
@@ -225,6 +315,197 @@ impl ClientHandle {
         crate::note::commit_note(client, account_id, &miden_note)
             .await
             .map_err(|e| format!("Commit note failed: {}", e))
+    }
+
+    /// Implementation of note consumption logic
+    async fn consume_note_impl(
+        client: &mut Client<FilesystemKeyStore<StdRng>>,
+        account_id: AccountId,
+        note_hex: &str,
+    ) -> Result<MidenTransactionId, String> {
+        use miden_client::transaction::TransactionRequestBuilder;
+        use miden_lib::utils::Deserializable;
+
+        tracing::info!(
+            account_id = %account_id,
+            note_hex_length = note_hex.len(),
+            "Starting note consumption"
+        );
+
+        // Decode note hex
+        let note_bytes = hex::decode(note_hex).map_err(|e| {
+            tracing::error!(
+                error = %e,
+                account_id = %account_id,
+                note_hex = %note_hex,
+                note_hex_length = note_hex.len(),
+                "Failed to decode note hex"
+            );
+            format!("Failed to decode note hex: {}", e)
+        })?;
+
+        tracing::info!(
+            account_id = %account_id,
+            note_bytes_length = note_bytes.len(),
+            "Successfully decoded note hex"
+        );
+
+        // Deserialize note
+        let note = miden_client::note::Note::read_from_bytes(&note_bytes).map_err(|e| {
+            tracing::error!(
+                error = %e,
+                account_id = %account_id,
+                note_bytes_length = note_bytes.len(),
+                note_bytes_hex = %hex::encode(&note_bytes),
+                "Failed to deserialize note from bytes"
+            );
+            format!("Failed to deserialize note: {}", e)
+        })?;
+
+        let note_id = note.id();
+        tracing::info!(
+            account_id = %account_id,
+            note_id = %note_id,
+            note_metadata = ?note.metadata(),
+            note_assets = ?note.assets(),
+            "Successfully deserialized note"
+        );
+
+        // Build transaction request to consume the note
+        let tx_request = TransactionRequestBuilder::new()
+            //.build_consume_notes(vec![note_id])
+            .unauthenticated_input_notes(vec![(note, None)])
+            .build()
+            .map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    "Failed to build transaction"
+                );
+                format!("Failed to build transaction: {:?}", e)
+            })?;
+
+        tracing::info!(
+            account_id = %account_id,
+            note_id = %note_id,
+            "Successfully built transaction request"
+        );
+
+        // Execute transaction
+        let tx_result = client
+            .new_transaction(account_id, tx_request)
+            .await
+            .map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    account_id = %account_id,
+                    "Failed to execute transaction"
+                );
+                format!("Failed to execute transaction: {:?}", e)
+            })?;
+
+        let tx_id = tx_result.executed_transaction().id();
+        tracing::info!(
+            transaction_id = %tx_id,
+            account_id = %account_id,
+            note_id = %note_id,
+            "Successfully executed transaction"
+        );
+
+        // Submit transaction
+        client.submit_transaction(tx_result).await.map_err(|e| {
+            tracing::error!(
+                error = %e,
+                transaction_id = %tx_id,
+                account_id = %account_id,
+                note_id = %note_id,
+                "Failed to submit transaction"
+            );
+            format!("Failed to submit transaction: {}", e)
+        })?;
+
+        tracing::info!(
+            transaction_id = %tx_id,
+            account_id = %account_id,
+            note_id = %note_id,
+            "Successfully submitted transaction"
+        );
+
+        Ok(format!("{}", tx_id))
+    }
+
+    /// Implementation of getting account status
+    async fn get_account_status_impl(
+        client: &Client<FilesystemKeyStore<StdRng>>,
+        account_id: AccountId,
+        network: Network,
+    ) -> Result<crate::AccountStatusData, String> {
+        use miden_objects::asset::Asset;
+
+        // Get account
+        let account_record = client
+            .get_account(account_id)
+            .await
+            .map_err(|e| format!("Failed to get account: {}", e))?
+            .ok_or_else(|| format!("Account not found: {}", account_id))?;
+
+        let account: miden_client::account::Account = account_record.into();
+
+        // Get account type from the account ID's storage mode
+        let storage_mode = if account_id.is_private() {
+            "Private"
+        } else {
+            "Public"
+        };
+
+        // Get network ID for bech32 encoding
+        let network_id = network.to_network_id();
+
+        // Iterate through assets
+        let mut assets = Vec::new();
+        for asset in account.vault().assets() {
+            match asset {
+                Asset::Fungible(fungible_asset) => {
+                    let faucet_id = fungible_asset.faucet_id();
+                    // Convert to bech32 format
+                    let faucet_address = miden_objects::address::AccountIdAddress::new(
+                        faucet_id,
+                        miden_objects::address::AddressInterface::Unspecified,
+                    );
+                    let faucet_bech32 =
+                        miden_objects::address::Address::from(faucet_address).to_bech32(network_id);
+
+                    assets.push(crate::AssetData {
+                        faucet: faucet_bech32,
+                        amount: fungible_asset.amount(),
+                        fungible: true,
+                    });
+                }
+                Asset::NonFungible(_non_fungible_asset) => {
+                    // For non-fungible assets, we'll use a placeholder
+                    // In a production system, you'd want to properly handle this
+                    assets.push(crate::AssetData {
+                        faucet: "non-fungible".to_string(),
+                        amount: 1,
+                        fungible: false,
+                    });
+                }
+            }
+        }
+
+        // Get account ID in bech32 format
+        let account_address = miden_objects::address::AccountIdAddress::new(
+            account_id,
+            miden_objects::address::AddressInterface::Unspecified,
+        );
+        let account_id_bech32 =
+            miden_objects::address::Address::from(account_address).to_bech32(network_id);
+
+        Ok(crate::AccountStatusData {
+            account_id: account_id_bech32,
+            storage_mode: storage_mode.to_string(),
+            account_type: String::new(), // Will be filled in by the serve layer from the store
+            assets,
+        })
     }
 
     /// Request the client to sync its state
@@ -247,6 +528,37 @@ impl ClientHandle {
 
         self.command_tx
             .send(ClientCommand::CreateAccount { respond_to })
+            .map_err(|_| "Client thread has shut down".to_string())?;
+
+        let (account, key_pair) = response_rx
+            .await
+            .map_err(|_| "Client thread dropped response".to_string())??;
+
+        // Store the key in the keystore
+        self.keystore
+            .add_key(&AuthSecretKey::RpoFalcon512(key_pair))
+            .map_err(|e| format!("Failed to store key: {}", e))?;
+
+        Ok(account)
+    }
+
+    /// Create a new faucet account in the client
+    /// Returns the account (the secret key is automatically stored in the keystore)
+    pub async fn create_faucet_account(
+        &self,
+        token_symbol: String,
+        decimals: u8,
+        max_supply: u64,
+    ) -> Result<miden_client::account::Account, String> {
+        let (respond_to, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ClientCommand::CreateFaucetAccount {
+                token_symbol,
+                decimals,
+                max_supply,
+                respond_to,
+            })
             .map_err(|_| "Client thread has shut down".to_string())?;
 
         let (account, key_pair) = response_rx
@@ -294,13 +606,60 @@ impl ClientHandle {
     }
 
     /// Commit a note to the network
-    pub async fn commit_note(&self, account_id: AccountId, note_hex: String) -> Result<(), String> {
+    pub async fn commit_note(
+        &self,
+        account_id: AccountId,
+        note_hex: String,
+    ) -> Result<MidenTransactionId, String> {
         let (respond_to, response_rx) = oneshot::channel();
 
         self.command_tx
             .send(ClientCommand::CommitNote {
                 account_id,
                 note_hex,
+                respond_to,
+            })
+            .map_err(|_| "Client thread has shut down".to_string())?;
+
+        response_rx
+            .await
+            .map_err(|_| "Client thread dropped response".to_string())?
+    }
+
+    /// Consume a note and execute the transaction
+    /// Returns the transaction ID
+    pub async fn consume_note(
+        &self,
+        account_id: AccountId,
+        note_hex: String,
+    ) -> Result<MidenTransactionId, String> {
+        let (respond_to, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ClientCommand::ConsumeNote {
+                account_id,
+                note_hex,
+                respond_to,
+            })
+            .map_err(|_| "Client thread has shut down".to_string())?;
+
+        response_rx
+            .await
+            .map_err(|_| "Client thread dropped response".to_string())?
+    }
+
+    /// Get account status including assets
+    pub async fn get_account_status(
+        &self,
+        account_id: AccountId,
+        network: Network,
+    ) -> Result<crate::AccountStatusData, String> {
+        let (respond_to, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ClientCommand::GetAccountStatus {
+                account_id,
+                network,
                 respond_to,
             })
             .map_err(|_| "Client thread has shut down".to_string())?;

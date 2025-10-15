@@ -1,4 +1,4 @@
-use crate::version;
+use crate::{MidenTransactionId, version};
 
 use miden_assembly::{
     Assembler, DefaultSourceManager, Library, LibraryPath,
@@ -11,8 +11,13 @@ use miden_client::{
     note::{Note, NoteAssets, NoteExecutionHint, NoteInputs, NoteMetadata, NoteRecipient, NoteTag},
     transaction::{OutputNote, TransactionKernel, TransactionRequestBuilder},
 };
-use miden_lib::utils::{Deserializable, Serializable};
-use miden_objects::{Felt, Word};
+use miden_lib::{
+    note::create_p2id_note,
+    utils::{Deserializable, Serializable},
+};
+use miden_objects::{
+    Felt, Word, asset::FungibleAsset, crypto::rand::RpoRandomCoin, note::NoteType as MidenNoteType,
+};
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -51,7 +56,7 @@ pub type Inputs = Vec<Input>;
 ///
 /// * `Public` - Note data is publicly visible onchain
 /// * `Private` - Note is private
-#[derive(PartialEq, Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(PartialEq, Serialize, Deserialize, Debug, Clone, Copy, schemars::JsonSchema)]
 pub enum NoteType {
     /// Public note
     Public,
@@ -123,7 +128,7 @@ pub struct MidenAbstractNote {
 ///     miden_note_hex: "a1b2c3...".to_string(),
 /// };
 /// ```
-#[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
+#[derive(PartialEq, Serialize, Deserialize, Debug, Clone, schemars::JsonSchema)]
 pub struct MidenNote {
     /// Schema version identifier
     pub version: String,
@@ -206,18 +211,131 @@ pub fn compile_note(
     Ok(miden_note)
 }
 
+/// Compile a P2ID (Pay-to-ID) note for transferring fungible assets
+///
+/// This function creates a note that transfers fungible assets from a faucet account
+/// to a target account using Miden's built-in P2ID note functionality.
+///
+/// # Arguments
+///
+/// * `faucet_account_id` - The account ID of the faucet sending the assets
+/// * `target_account_id` - The account ID of the recipient
+/// * `amount` - The amount of tokens to transfer
+/// * `rng` - Random number generator for note creation
+///
+/// # Returns
+///
+/// Returns a `MidenNote` containing the serialized P2ID note
+pub fn compile_p2id_note(
+    faucet_account_id: AccountId,
+    target_account_id: AccountId,
+    amount: u64,
+    rng: &mut RpoRandomCoin,
+) -> Result<MidenNote, Box<dyn std::error::Error>> {
+    // Create a fungible asset from the faucet
+    let fungible_asset = FungibleAsset::new(faucet_account_id, amount)?;
+
+    // Create a P2ID note to send the asset to the target account
+    let p2id_note = create_p2id_note(
+        faucet_account_id,
+        target_account_id,
+        vec![fungible_asset.into()],
+        MidenNoteType::Private,
+        Felt::new(0),
+        rng,
+    )?;
+
+    // Serialize the note
+    let mut buffer = Vec::new();
+    p2id_note.write_into(&mut buffer);
+    let note_hex = hex::encode(&buffer);
+
+    Ok(MidenNote {
+        version: version::VERSION_STRING.to_string(),
+        note_type: NoteType::Private,
+        miden_note_hex: note_hex,
+    })
+}
+
 pub async fn commit_note(
     client: &mut Client<FilesystemKeyStore<StdRng>>,
     account_id: AccountId,
     note: &MidenNote,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let note_bytes = hex::decode(&note.miden_note_hex)?;
-    let note_inner = Note::read_from_bytes(&note_bytes)?;
+) -> Result<MidenTransactionId, Box<dyn std::error::Error>> {
+    // Decode note hex
+    let note_bytes = match hex::decode(&note.miden_note_hex) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                account_id = %account_id,
+                note_version = %note.version,
+                note_type = ?note.note_type,
+                note_hex = %note.miden_note_hex,
+                note_hex_length = note.miden_note_hex.len(),
+                "Failed to decode note hex"
+            );
+            return Err(Box::new(e));
+        }
+    };
 
-    let tx_req = TransactionRequestBuilder::new()
-        .own_output_notes(vec![OutputNote::Full(note_inner)])
-        .build()?;
-    let tx_result = client.new_transaction(account_id, tx_req).await?;
+    // Deserialize note
+    let note_inner = match Note::read_from_bytes(&note_bytes) {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                account_id = %account_id,
+                note_version = %note.version,
+                note_type = ?note.note_type,
+                note_hex = %note.miden_note_hex,
+                note_bytes_length = note_bytes.len(),
+                note_bytes_hex = %hex::encode(&note_bytes),
+                "Failed to deserialize note from bytes"
+            );
+            return Err(Box::new(e));
+        }
+    };
+
+    // Build transaction request
+    let tx_req = match TransactionRequestBuilder::new()
+        .own_output_notes(vec![OutputNote::Full(note_inner.clone())])
+        .build()
+    {
+        Ok(req) => req,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                account_id = %account_id,
+                note_version = %note.version,
+                note_type = ?note.note_type,
+                note_id = %note_inner.id(),
+                note_metadata = ?note_inner.metadata(),
+                note_assets = ?note_inner.assets(),
+                "Failed to build transaction request"
+            );
+            return Err(Box::new(e));
+        }
+    };
+
+    // Execute transaction
+    let tx_result = match client.new_transaction(account_id, tx_req).await {
+        Ok(result) => result,
+        Err(e) => {
+            tracing::error!(
+                error = %e,
+                account_id = %account_id,
+                note_version = %note.version,
+                note_type = ?note.note_type,
+                note_id = %note_inner.id(),
+                note_metadata = ?note_inner.metadata(),
+                note_assets = ?note_inner.assets(),
+                note_recipient = ?note_inner.recipient(),
+                "Failed to execute transaction"
+            );
+            return Err(Box::new(e));
+        }
+    };
 
     let tx_id = tx_result.executed_transaction().id();
     tracing::info!(
@@ -226,9 +344,22 @@ pub async fn commit_note(
         "Transaction executed"
     );
 
-    client.submit_transaction(tx_result).await?;
+    // Submit transaction
+    if let Err(e) = client.submit_transaction(tx_result).await {
+        tracing::error!(
+            error = %e,
+            transaction_id = %tx_id,
+            account_id = %account_id,
+            note_version = %note.version,
+            note_type = ?note.note_type,
+            note_id = %note_inner.id(),
+            note_hex = %note.miden_note_hex,
+            "Failed to submit transaction"
+        );
+        return Err(Box::new(e));
+    }
 
-    Ok(())
+    Ok(tx_id.to_string())
 }
 
 #[cfg(test)]

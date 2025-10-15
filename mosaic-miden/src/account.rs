@@ -17,7 +17,6 @@ impl<T> Account<T> {
     }
 
     pub fn miden_account_id_bech32(&self) -> String {
-        // Convert AccountId to bech32 format using the Address type
         let account_id = self.miden_account.id();
         let address = AccountIdAddress::new(account_id, AddressInterface::BasicWallet);
         let network_id = self.network.to_network_id();
