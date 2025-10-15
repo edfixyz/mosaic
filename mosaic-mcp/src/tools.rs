@@ -753,10 +753,24 @@ impl Mosaic {
         &self,
         Parameters(req): Parameters<ConsumeNoteRequest>,
     ) -> Result<CallToolResult, McpError> {
+        tracing::info!(
+            tool = "consume_note",
+            account_id = %req.account_id,
+            network = %req.network,
+            note_version = %req.miden_note.version,
+            note_type = ?req.miden_note.note_type,
+            note_hex_length = req.miden_note.miden_note_hex.len(),
+            "MCP tools layer: Starting note consumption"
+        );
+
         // Parse hex secret
         let secret_bytes = hex::decode(&req.secret).map_err(|e| {
             let error_msg = format!("Invalid secret hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse secret");
+            tracing::error!(
+                error = %error_msg,
+                account_id = %req.account_id,
+                "MCP tools layer: Failed to parse secret"
+            );
             McpError::invalid_params(error_msg, None)
         })?;
 
@@ -765,7 +779,12 @@ impl Mosaic {
                 "Secret must be 32 bytes (64 hex chars), got {} bytes",
                 secret_bytes.len()
             );
-            tracing::error!(error = %error_msg, "Invalid secret length");
+            tracing::error!(
+                error = %error_msg,
+                secret_length = secret_bytes.len(),
+                account_id = %req.account_id,
+                "MCP tools layer: Invalid secret length"
+            );
             return Err(McpError::invalid_params(error_msg, None));
         }
 
@@ -781,10 +800,21 @@ impl Mosaic {
                     "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
                     req.network
                 );
-                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
+                tracing::error!(
+                    error = %error_msg,
+                    network = %req.network,
+                    account_id = %req.account_id,
+                    "MCP tools layer: Invalid network"
+                );
                 return Err(McpError::invalid_params(error_msg, None));
             }
         };
+
+        tracing::info!(
+            account_id = %req.account_id,
+            network = ?network,
+            "MCP tools layer: Parsed inputs, calling serve layer"
+        );
 
         // Consume the note
         let transaction_id = {
@@ -798,7 +828,7 @@ impl Mosaic {
                         error = %error_msg,
                         account_id = %req.account_id,
                         network = %req.network,
-                        "Failed to consume note"
+                        "MCP tools layer: Failed to consume note"
                     );
                     McpError::internal_error(error_msg, None)
                 })?
@@ -809,7 +839,7 @@ impl Mosaic {
             account_id = %req.account_id,
             network = %req.network,
             transaction_id = %transaction_id,
-            "Note consumed successfully"
+            "MCP tools layer: Note consumed successfully"
         );
 
         Ok(CallToolResult::success(vec![Content::text(format!(

@@ -1,4 +1,4 @@
-use crate::version;
+use crate::{MidenTransactionId, version};
 
 use miden_assembly::{
     Assembler, DefaultSourceManager, Library, LibraryPath,
@@ -261,7 +261,7 @@ pub async fn commit_note(
     client: &mut Client<FilesystemKeyStore<StdRng>>,
     account_id: AccountId,
     note: &MidenNote,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<MidenTransactionId, Box<dyn std::error::Error>> {
     // Decode note hex
     let note_bytes = match hex::decode(&note.miden_note_hex) {
         Ok(bytes) => bytes,
@@ -359,7 +359,7 @@ pub async fn commit_note(
         return Err(Box::new(e));
     }
 
-    Ok(())
+    Ok(tx_id.to_string())
 }
 
 #[cfg(test)]

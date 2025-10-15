@@ -1,4 +1,4 @@
-use crate::Network;
+use crate::{MidenTransactionId, Network};
 use miden_client::{
     Client,
     account::{AccountHeader, AccountId, component::BasicWallet},
@@ -77,12 +77,12 @@ pub enum ClientCommand {
     CommitNote {
         account_id: AccountId,
         note_hex: String,
-        respond_to: oneshot::Sender<Result<(), String>>,
+        respond_to: oneshot::Sender<Result<MidenTransactionId, String>>,
     },
     ConsumeNote {
         account_id: AccountId,
         note_hex: String,
-        respond_to: oneshot::Sender<Result<String, String>>,
+        respond_to: oneshot::Sender<Result<MidenTransactionId, String>>,
     },
     GetAccountStatus {
         account_id: AccountId,
@@ -301,7 +301,7 @@ impl ClientHandle {
         client: &mut Client<FilesystemKeyStore<StdRng>>,
         account_id: AccountId,
         note_hex: &str,
-    ) -> Result<(), String> {
+    ) -> Result<MidenTransactionId, String> {
         use crate::note::MidenNote;
 
         let miden_note = MidenNote {
@@ -320,38 +320,113 @@ impl ClientHandle {
         client: &mut Client<FilesystemKeyStore<StdRng>>,
         account_id: AccountId,
         note_hex: &str,
-    ) -> Result<String, String> {
+    ) -> Result<MidenTransactionId, String> {
         use miden_client::transaction::TransactionRequestBuilder;
         use miden_lib::utils::Deserializable;
 
+        tracing::info!(
+            account_id = %account_id,
+            note_hex_length = note_hex.len(),
+            "Starting note consumption"
+        );
+
         // Decode note hex
-        let note_bytes =
-            hex::decode(note_hex).map_err(|e| format!("Failed to decode note hex: {}", e))?;
+        let note_bytes = hex::decode(note_hex).map_err(|e| {
+            tracing::error!(
+                error = %e,
+                account_id = %account_id,
+                note_hex = %note_hex,
+                note_hex_length = note_hex.len(),
+                "Failed to decode note hex"
+            );
+            format!("Failed to decode note hex: {}", e)
+        })?;
+
+        tracing::info!(
+            account_id = %account_id,
+            note_bytes_length = note_bytes.len(),
+            "Successfully decoded note hex"
+        );
 
         // Deserialize note
-        let note = miden_client::note::Note::read_from_bytes(&note_bytes)
-            .map_err(|e| format!("Failed to deserialize note: {}", e))?;
+        let note = miden_client::note::Note::read_from_bytes(&note_bytes).map_err(|e| {
+            tracing::error!(
+                error = %e,
+                account_id = %account_id,
+                note_bytes_length = note_bytes.len(),
+                note_bytes_hex = %hex::encode(&note_bytes),
+                "Failed to deserialize note from bytes"
+            );
+            format!("Failed to deserialize note: {}", e)
+        })?;
 
         let note_id = note.id();
+        tracing::info!(
+            account_id = %account_id,
+            note_id = %note_id,
+            note_metadata = ?note.metadata(),
+            note_assets = ?note.assets(),
+            "Successfully deserialized note"
+        );
 
         // Build transaction request to consume the note
         let tx_request = TransactionRequestBuilder::new()
-            .build_consume_notes(vec![note_id])
-            .map_err(|e| format!("Failed to build consume notes transaction: {}", e))?;
+            //.build_consume_notes(vec![note_id])
+            .unauthenticated_input_notes(vec!((note, None)))
+            .build()
+            .map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    "Failed to build transaction"
+                );
+                format!("Failed to build transaction: {:?}", e)
+            })?;
+
+        tracing::info!(
+            account_id = %account_id,
+            note_id = %note_id,
+            "Successfully built transaction request"
+        );
 
         // Execute transaction
         let tx_result = client
             .new_transaction(account_id, tx_request)
             .await
-            .map_err(|e| format!("Failed to execute transaction: {}", e))?;
+            .map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    account_id = %account_id,
+                    "Failed to execute transaction"
+                );
+                format!("Failed to execute transaction: {:?}", e)
+            })?;
 
         let tx_id = tx_result.executed_transaction().id();
+        tracing::info!(
+            transaction_id = %tx_id,
+            account_id = %account_id,
+            note_id = %note_id,
+            "Successfully executed transaction"
+        );
 
         // Submit transaction
-        client
-            .submit_transaction(tx_result)
-            .await
-            .map_err(|e| format!("Failed to submit transaction: {}", e))?;
+        client.submit_transaction(tx_result).await.map_err(|e| {
+            tracing::error!(
+                error = %e,
+                transaction_id = %tx_id,
+                account_id = %account_id,
+                note_id = %note_id,
+                "Failed to submit transaction"
+            );
+            format!("Failed to submit transaction: {}", e)
+        })?;
+
+        tracing::info!(
+            transaction_id = %tx_id,
+            account_id = %account_id,
+            note_id = %note_id,
+            "Successfully submitted transaction"
+        );
 
         Ok(format!("{}", tx_id))
     }
@@ -519,7 +594,11 @@ impl ClientHandle {
     }
 
     /// Commit a note to the network
-    pub async fn commit_note(&self, account_id: AccountId, note_hex: String) -> Result<(), String> {
+    pub async fn commit_note(
+        &self,
+        account_id: AccountId,
+        note_hex: String,
+    ) -> Result<MidenTransactionId, String> {
         let (respond_to, response_rx) = oneshot::channel();
 
         self.command_tx
@@ -541,7 +620,7 @@ impl ClientHandle {
         &self,
         account_id: AccountId,
         note_hex: String,
-    ) -> Result<String, String> {
+    ) -> Result<MidenTransactionId, String> {
         let (respond_to, response_rx) = oneshot::channel();
 
         self.command_tx

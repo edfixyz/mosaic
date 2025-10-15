@@ -1,6 +1,9 @@
 use miden_objects::Word;
 use miden_objects::account::AccountId;
-use mosaic_miden::note::{MidenAbstractNote, MidenNote, NoteType, Value};
+use mosaic_miden::{
+    MidenTransactionId,
+    note::{MidenAbstractNote, MidenNote, NoteType, Value},
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(PartialEq, Serialize, Deserialize, schemars::JsonSchema, Debug, Clone, Copy)]
@@ -72,7 +75,15 @@ pub enum Order {
 }
 
 #[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
+pub enum MosaicNoteStatus {
+    New,
+    Committed(MidenTransactionId),
+    Consumed(MidenTransactionId, MidenTransactionId),
+}
+
+#[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
 pub struct MosaicNote {
+    pub status: MosaicNoteStatus,
     pub recipient: Recipient,
     pub order: Order,
     pub miden_note: MidenNote,
@@ -114,6 +125,7 @@ pub fn compile_note_from_account_id(
             let recipient_id = format!("desk:{}", market);
 
             Ok(MosaicNote {
+                status: MosaicNoteStatus::New,
                 recipient: Recipient::AccountId(recipient_id),
                 order,
                 miden_note,
@@ -159,6 +171,7 @@ pub fn compile_note_from_account_id(
             )?;
 
             Ok(MosaicNote {
+                status: MosaicNoteStatus::New,
                 recipient: Recipient::AccountId(target_account_id.clone()),
                 order,
                 miden_note,

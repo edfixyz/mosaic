@@ -5,6 +5,8 @@ pub mod store;
 pub mod transaction;
 pub mod version;
 
+pub type MidenTransactionId = String;
+
 use miden_objects::account::NetworkId;
 use serde::Serialize;
 

@@ -1,7 +1,7 @@
 use mosaic_fi::AccountType;
-use mosaic_fi::note::{Market, MosaicNote};
-use mosaic_miden::Network;
+use mosaic_fi::note::{Market, MosaicNote, MosaicNoteStatus};
 use mosaic_miden::client::ClientHandle;
+use mosaic_miden::{MidenTransactionId, Network};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -199,12 +199,14 @@ impl Serve {
             .map_err(|e| anyhow::anyhow!("Failed to get account: {}", e))?
             .ok_or_else(|| anyhow::anyhow!("Account not found: {}", account_id_bech32))?;
 
-        let mosaic_note = mosaic_fi::note::compile_note_from_account_id(account_id, order)?;
+        let mut mosaic_note = mosaic_fi::note::compile_note_from_account_id(account_id, order)?;
 
-        client_handle
+        let tx_commit_id = client_handle
             .commit_note(account_id, mosaic_note.miden_note.miden_note_hex.clone())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to commit note: {}", e))?;
+
+        mosaic_note.status = MosaicNoteStatus::Committed(tx_commit_id);
 
         Ok(mosaic_note)
     }
@@ -270,7 +272,7 @@ impl Serve {
         )?;
 
         // Commit the note
-        client_handle
+        let _tx_commit_id = client_handle
             .commit_note(account_id, miden_note.miden_note_hex.clone())
             .await
             .map_err(|e| anyhow::anyhow!("Failed to commit note: {}", e))?;
@@ -284,31 +286,92 @@ impl Serve {
         network: Network,
         account_id_bech32: String,
         miden_note: mosaic_miden::note::MidenNote,
-    ) -> Result<String, Box<dyn std::error::Error>> {
+    ) -> Result<MidenTransactionId, Box<dyn std::error::Error>> {
+        tracing::info!(
+            account_id_bech32 = %account_id_bech32,
+            network = ?network,
+            note_version = %miden_note.version,
+            note_type = ?miden_note.note_type,
+            note_hex_length = miden_note.miden_note_hex.len(),
+            "Serve layer: Starting note consumption"
+        );
+
         let client_handle = self.get_client(secret, network).await?;
 
         let (_network_id, address) =
-            miden_objects::address::Address::from_bech32(&account_id_bech32)?;
+            miden_objects::address::Address::from_bech32(&account_id_bech32).map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    account_id_bech32 = %account_id_bech32,
+                    "Failed to parse bech32 address"
+                );
+                e
+            })?;
         let account_id = match address {
             miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
             _ => {
+                tracing::error!(
+                    account_id_bech32 = %account_id_bech32,
+                    address_type = ?address,
+                    "Invalid address type for account ID"
+                );
                 return Err(
                     format!("Invalid address type for account ID: {}", account_id_bech32).into(),
                 );
             }
         };
 
-        let _account_record = client_handle
+        tracing::info!(
+            account_id = %account_id,
+            account_id_bech32 = %account_id_bech32,
+            "Serve layer: Parsed account ID"
+        );
+
+        let account_record = client_handle
             .get_account(account_id)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to get account: {}", e))?
-            .ok_or_else(|| anyhow::anyhow!("Account not found: {}", account_id_bech32))?;
+            .map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    account_id = %account_id,
+                    "Failed to get account from client"
+                );
+                anyhow::anyhow!("Failed to get account: {}", e)
+            })?
+            .ok_or_else(|| {
+                tracing::error!(
+                    account_id = %account_id,
+                    account_id_bech32 = %account_id_bech32,
+                    "Account not found in client store"
+                );
+                anyhow::anyhow!("Account not found: {}", account_id_bech32)
+            })?;
+
+        tracing::info!(
+            account_id = %account_id,
+            account_status = ?account_record.status(),
+            "Serve layer: Retrieved account record"
+        );
 
         // Consume the note
         let transaction_id = client_handle
             .consume_note(account_id, miden_note.miden_note_hex.clone())
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to consume note: {}", e))?;
+            .map_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    account_id = %account_id,
+                    note_hex_length = miden_note.miden_note_hex.len(),
+                    "Serve layer: Failed to consume note"
+                );
+                anyhow::anyhow!("Failed to consume note: {}", e)
+            })?;
+
+        tracing::info!(
+            transaction_id = %transaction_id,
+            account_id = %account_id,
+            "Serve layer: Successfully consumed note"
+        );
 
         Ok(transaction_id)
     }
