@@ -372,7 +372,7 @@ impl ClientHandle {
         // Build transaction request to consume the note
         let tx_request = TransactionRequestBuilder::new()
             //.build_consume_notes(vec![note_id])
-            .unauthenticated_input_notes(vec!((note, None)))
+            .unauthenticated_input_notes(vec![(note, None)])
             .build()
             .map_err(|e| {
                 tracing::error!(
