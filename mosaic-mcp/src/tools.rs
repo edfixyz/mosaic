@@ -91,6 +91,49 @@ pub struct CreateNoteFromMasmRequest {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ConsumeNoteRequest {
+    /// 32-byte secret as a hex string (64 characters)
+    pub secret: String,
+    /// Network: "Testnet" or "Localnet"
+    pub network: String,
+    /// Account ID in bech32 format
+    pub account_id: String,
+    /// Miden note to consume as JSON object
+    pub miden_note: mosaic_miden::note::MidenNote,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct GetAccountStatusRequest {
+    /// 32-byte secret as a hex string (64 characters)
+    pub secret: String,
+    /// Network: "Testnet" or "Localnet"
+    pub network: String,
+    /// Account ID in bech32 format
+    pub account_id: String,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct AssetInfo {
+    /// Faucet account ID in bech32 format
+    pub faucet: String,
+    /// Amount of the asset
+    pub amount: u64,
+    /// Whether this is a fungible asset
+    pub fungible: bool,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct AccountStatus {
+    /// Account ID in bech32 format
+    pub account_id: String,
+    /// Account type: "Private" or "Public"
+    #[serde(rename = "type")]
+    pub account_type: String,
+    /// List of assets held by the account
+    pub assets: Vec<AssetInfo>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct FlushRequest {}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -602,6 +645,172 @@ impl Mosaic {
         Ok(CallToolResult::success(vec![Content::text(format!(
             "Note created from MASM successfully!\nSecret: {}\nNetwork: {}\nAccount ID: {}\n\nNote:\n{}",
             req.secret, req.network, req.account_id, note_json
+        ))]))
+    }
+
+    #[tool(
+        description = "Get account status including account type and all assets held by the account"
+    )]
+    async fn get_account_status(
+        &self,
+        Parameters(req): Parameters<GetAccountStatusRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        // Parse hex secret
+        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
+            let error_msg = format!("Invalid secret hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse secret");
+            McpError::invalid_params(error_msg, None)
+        })?;
+
+        if secret_bytes.len() != 32 {
+            let error_msg = format!(
+                "Secret must be 32 bytes (64 hex chars), got {} bytes",
+                secret_bytes.len()
+            );
+            tracing::error!(error = %error_msg, "Invalid secret length");
+            return Err(McpError::invalid_params(error_msg, None));
+        }
+
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&secret_bytes);
+
+        // Parse network
+        let network = match req.network.as_str() {
+            "Testnet" => Network::Testnet,
+            "Localnet" => Network::Localnet,
+            _ => {
+                let error_msg = format!(
+                    "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
+                    req.network
+                );
+                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
+                return Err(McpError::invalid_params(error_msg, None));
+            }
+        };
+
+        // Get account status
+        let account_status = {
+            let mut serve = self.serve.lock().await;
+            serve
+                .get_account_status(secret, network, req.account_id.clone())
+                .await
+                .map_err(|e| {
+                    let error_msg = format!("Failed to get account status: {}", e);
+                    tracing::error!(
+                        error = %error_msg,
+                        account_id = %req.account_id,
+                        network = %req.network,
+                        "Failed to get account status"
+                    );
+                    McpError::internal_error(error_msg, None)
+                })?
+        };
+
+        tracing::info!(
+            tool = "get_account_status",
+            account_id = %req.account_id,
+            network = %req.network,
+            asset_count = account_status.assets.len(),
+            "Retrieved account status"
+        );
+
+        // Convert to the MCP response format
+        let response = AccountStatus {
+            account_id: account_status.account_id,
+            account_type: account_status.account_type,
+            assets: account_status
+                .assets
+                .into_iter()
+                .map(|a| AssetInfo {
+                    faucet: a.faucet,
+                    amount: a.amount,
+                    fungible: a.fungible,
+                })
+                .collect(),
+        };
+
+        // Serialize to JSON
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize account status: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize account status");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Account status:\n{}",
+            response_json
+        ))]))
+    }
+
+    #[tool(
+        description = "Consume a note using the specified account. This will execute a transaction to consume the note and add its assets to the account."
+    )]
+    async fn consume_note(
+        &self,
+        Parameters(req): Parameters<ConsumeNoteRequest>,
+    ) -> Result<CallToolResult, McpError> {
+        // Parse hex secret
+        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
+            let error_msg = format!("Invalid secret hex string: {}", e);
+            tracing::error!(error = %error_msg, "Failed to parse secret");
+            McpError::invalid_params(error_msg, None)
+        })?;
+
+        if secret_bytes.len() != 32 {
+            let error_msg = format!(
+                "Secret must be 32 bytes (64 hex chars), got {} bytes",
+                secret_bytes.len()
+            );
+            tracing::error!(error = %error_msg, "Invalid secret length");
+            return Err(McpError::invalid_params(error_msg, None));
+        }
+
+        let mut secret = [0u8; 32];
+        secret.copy_from_slice(&secret_bytes);
+
+        // Parse network
+        let network = match req.network.as_str() {
+            "Testnet" => Network::Testnet,
+            "Localnet" => Network::Localnet,
+            _ => {
+                let error_msg = format!(
+                    "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
+                    req.network
+                );
+                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
+                return Err(McpError::invalid_params(error_msg, None));
+            }
+        };
+
+        // Consume the note
+        let transaction_id = {
+            let mut serve = self.serve.lock().await;
+            serve
+                .consume_note(secret, network, req.account_id.clone(), req.miden_note)
+                .await
+                .map_err(|e| {
+                    let error_msg = format!("Failed to consume note: {}", e);
+                    tracing::error!(
+                        error = %error_msg,
+                        account_id = %req.account_id,
+                        network = %req.network,
+                        "Failed to consume note"
+                    );
+                    McpError::internal_error(error_msg, None)
+                })?
+        };
+
+        tracing::info!(
+            tool = "consume_note",
+            account_id = %req.account_id,
+            network = %req.network,
+            transaction_id = %transaction_id,
+            "Note consumed successfully"
+        );
+
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "Note consumed successfully!\nSecret: {}\nNetwork: {}\nAccount ID: {}\nTransaction ID: {}",
+            req.secret, req.network, req.account_id, transaction_id
         ))]))
     }
 

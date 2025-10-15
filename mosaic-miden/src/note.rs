@@ -56,7 +56,7 @@ pub type Inputs = Vec<Input>;
 ///
 /// * `Public` - Note data is publicly visible onchain
 /// * `Private` - Note is private
-#[derive(PartialEq, Serialize, Deserialize, Debug, Clone, Copy)]
+#[derive(PartialEq, Serialize, Deserialize, Debug, Clone, Copy, schemars::JsonSchema)]
 pub enum NoteType {
     /// Public note
     Public,
@@ -128,7 +128,7 @@ pub struct MidenAbstractNote {
 ///     miden_note_hex: "a1b2c3...".to_string(),
 /// };
 /// ```
-#[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
+#[derive(PartialEq, Serialize, Deserialize, Debug, Clone, schemars::JsonSchema)]
 pub struct MidenNote {
     /// Schema version identifier
     pub version: String,

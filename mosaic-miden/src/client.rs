@@ -79,6 +79,15 @@ pub enum ClientCommand {
         note_hex: String,
         respond_to: oneshot::Sender<Result<(), String>>,
     },
+    ConsumeNote {
+        account_id: AccountId,
+        note_hex: String,
+        respond_to: oneshot::Sender<Result<String, String>>,
+    },
+    GetAccountStatus {
+        account_id: AccountId,
+        respond_to: oneshot::Sender<Result<crate::AccountStatusData, String>>,
+    },
     Shutdown,
 }
 
@@ -199,6 +208,21 @@ impl ClientHandle {
                     let result = Self::commit_note_impl(&mut client, account_id, &note_hex).await;
                     let _ = respond_to.send(result);
                 }
+                ClientCommand::ConsumeNote {
+                    account_id,
+                    note_hex,
+                    respond_to,
+                } => {
+                    let result = Self::consume_note_impl(&mut client, account_id, &note_hex).await;
+                    let _ = respond_to.send(result);
+                }
+                ClientCommand::GetAccountStatus {
+                    account_id,
+                    respond_to,
+                } => {
+                    let result = Self::get_account_status_impl(&client, account_id).await;
+                    let _ = respond_to.send(result);
+                }
                 ClientCommand::Shutdown => {
                     break;
                 }
@@ -289,6 +313,111 @@ impl ClientHandle {
         crate::note::commit_note(client, account_id, &miden_note)
             .await
             .map_err(|e| format!("Commit note failed: {}", e))
+    }
+
+    /// Implementation of note consumption logic
+    async fn consume_note_impl(
+        client: &mut Client<FilesystemKeyStore<StdRng>>,
+        account_id: AccountId,
+        note_hex: &str,
+    ) -> Result<String, String> {
+        use miden_client::transaction::TransactionRequestBuilder;
+        use miden_lib::utils::Deserializable;
+
+        // Decode note hex
+        let note_bytes =
+            hex::decode(note_hex).map_err(|e| format!("Failed to decode note hex: {}", e))?;
+
+        // Deserialize note
+        let note = miden_client::note::Note::read_from_bytes(&note_bytes)
+            .map_err(|e| format!("Failed to deserialize note: {}", e))?;
+
+        let note_id = note.id();
+
+        // Build transaction request to consume the note
+        let tx_request = TransactionRequestBuilder::new()
+            .build_consume_notes(vec![note_id])
+            .map_err(|e| format!("Failed to build consume notes transaction: {}", e))?;
+
+        // Execute transaction
+        let tx_result = client
+            .new_transaction(account_id, tx_request)
+            .await
+            .map_err(|e| format!("Failed to execute transaction: {}", e))?;
+
+        let tx_id = tx_result.executed_transaction().id();
+
+        // Submit transaction
+        client
+            .submit_transaction(tx_result)
+            .await
+            .map_err(|e| format!("Failed to submit transaction: {}", e))?;
+
+        Ok(format!("{}", tx_id))
+    }
+
+    /// Implementation of getting account status
+    async fn get_account_status_impl(
+        client: &Client<FilesystemKeyStore<StdRng>>,
+        account_id: AccountId,
+    ) -> Result<crate::AccountStatusData, String> {
+        use miden_objects::asset::Asset;
+
+        // Get account
+        let account_record = client
+            .get_account(account_id)
+            .await
+            .map_err(|e| format!("Failed to get account: {}", e))?
+            .ok_or_else(|| format!("Account not found: {}", account_id))?;
+
+        let account: miden_client::account::Account = account_record.into();
+
+        // Get account type from the account ID's storage mode
+        let account_type = if account_id.is_private() {
+            "Private"
+        } else {
+            "Public"
+        };
+
+        // For bech32 encoding, we need a network ID. Since we don't have it in this context,
+        // we'll use hex representation for account IDs and faucet IDs
+
+        // Iterate through assets
+        let mut assets = Vec::new();
+        for asset in account.vault().assets() {
+            match asset {
+                Asset::Fungible(fungible_asset) => {
+                    let faucet_id = fungible_asset.faucet_id();
+                    // Use hex format instead of bech32 since we don't have network context
+                    let faucet_hex = format!("0x{}", faucet_id.to_hex());
+
+                    assets.push(crate::AssetData {
+                        faucet: faucet_hex,
+                        amount: fungible_asset.amount(),
+                        fungible: true,
+                    });
+                }
+                Asset::NonFungible(_non_fungible_asset) => {
+                    // For non-fungible assets, we'll skip them for now as they're more complex
+                    // and the faucet_id_prefix doesn't directly convert to AccountId
+                    // In a production system, you'd want to properly handle this
+                    assets.push(crate::AssetData {
+                        faucet: "non-fungible".to_string(),
+                        amount: 1,
+                        fungible: false,
+                    });
+                }
+            }
+        }
+
+        // Get account ID in hex format
+        let account_id_hex = format!("0x{}", account_id.to_hex());
+
+        Ok(crate::AccountStatusData {
+            account_id: account_id_hex,
+            account_type: account_type.to_string(),
+            assets,
+        })
     }
 
     /// Request the client to sync its state
@@ -396,6 +525,47 @@ impl ClientHandle {
             .send(ClientCommand::CommitNote {
                 account_id,
                 note_hex,
+                respond_to,
+            })
+            .map_err(|_| "Client thread has shut down".to_string())?;
+
+        response_rx
+            .await
+            .map_err(|_| "Client thread dropped response".to_string())?
+    }
+
+    /// Consume a note and execute the transaction
+    /// Returns the transaction ID
+    pub async fn consume_note(
+        &self,
+        account_id: AccountId,
+        note_hex: String,
+    ) -> Result<String, String> {
+        let (respond_to, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ClientCommand::ConsumeNote {
+                account_id,
+                note_hex,
+                respond_to,
+            })
+            .map_err(|_| "Client thread has shut down".to_string())?;
+
+        response_rx
+            .await
+            .map_err(|_| "Client thread dropped response".to_string())?
+    }
+
+    /// Get account status including assets
+    pub async fn get_account_status(
+        &self,
+        account_id: AccountId,
+    ) -> Result<crate::AccountStatusData, String> {
+        let (respond_to, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ClientCommand::GetAccountStatus {
+                account_id,
                 respond_to,
             })
             .map_err(|_| "Client thread has shut down".to_string())?;

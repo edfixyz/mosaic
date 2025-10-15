@@ -278,6 +278,69 @@ impl Serve {
         Ok(miden_note)
     }
 
+    pub async fn consume_note(
+        &mut self,
+        secret: [u8; 32],
+        network: Network,
+        account_id_bech32: String,
+        miden_note: mosaic_miden::note::MidenNote,
+    ) -> Result<String, Box<dyn std::error::Error>> {
+        let client_handle = self.get_client(secret, network).await?;
+
+        let (_network_id, address) =
+            miden_objects::address::Address::from_bech32(&account_id_bech32)?;
+        let account_id = match address {
+            miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
+            _ => {
+                return Err(
+                    format!("Invalid address type for account ID: {}", account_id_bech32).into(),
+                );
+            }
+        };
+
+        let _account_record = client_handle
+            .get_account(account_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get account: {}", e))?
+            .ok_or_else(|| anyhow::anyhow!("Account not found: {}", account_id_bech32))?;
+
+        // Consume the note
+        let transaction_id = client_handle
+            .consume_note(account_id, miden_note.miden_note_hex.clone())
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to consume note: {}", e))?;
+
+        Ok(transaction_id)
+    }
+
+    pub async fn get_account_status(
+        &mut self,
+        secret: [u8; 32],
+        network: Network,
+        account_id_bech32: String,
+    ) -> Result<mosaic_miden::AccountStatusData, Box<dyn std::error::Error>> {
+        let client_handle = self.get_client(secret, network).await?;
+
+        let (_network_id, address) =
+            miden_objects::address::Address::from_bech32(&account_id_bech32)?;
+        let account_id = match address {
+            miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
+            _ => {
+                return Err(
+                    format!("Invalid address type for account ID: {}", account_id_bech32).into(),
+                );
+            }
+        };
+
+        // Get account status
+        let account_status = client_handle
+            .get_account_status(account_id)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to get account status: {}", e))?;
+
+        Ok(account_status)
+    }
+
     /// Flush all cached clients
     /// Returns the number of clients that were flushed
     pub fn flush(&mut self) -> usize {
