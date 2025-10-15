@@ -126,8 +126,10 @@ pub struct AssetInfo {
 pub struct AccountStatus {
     /// Account ID in bech32 format
     pub account_id: String,
-    /// Account type: "Private" or "Public"
+    /// Storage mode: "Private" or "Public"
     #[serde(rename = "type")]
+    pub storage_mode: String,
+    /// Account type: "Client", "Desk", "Liquidity", or "Faucet"
     pub account_type: String,
     /// List of assets held by the account
     pub assets: Vec<AssetInfo>,
@@ -370,12 +372,13 @@ impl Mosaic {
         }
 
         let mut response = format!("Accounts for secret {}:\n\n", req.secret);
-        for (i, (account_id, network)) in accounts.iter().enumerate() {
+        for (i, (account_id, network, account_type)) in accounts.iter().enumerate() {
             response.push_str(&format!(
-                "{}. Account ID: {}\n   Network: {}\n\n",
+                "{}. Account ID: {}\n   Network: {}\n   Type: {}\n\n",
                 i + 1,
                 account_id,
-                network
+                network,
+                account_type
             ));
         }
 
@@ -717,6 +720,7 @@ impl Mosaic {
         // Convert to the MCP response format
         let response = AccountStatus {
             account_id: account_status.account_id,
+            storage_mode: account_status.storage_mode,
             account_type: account_status.account_type,
             assets: account_status
                 .assets

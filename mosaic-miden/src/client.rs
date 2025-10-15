@@ -415,7 +415,8 @@ impl ClientHandle {
 
         Ok(crate::AccountStatusData {
             account_id: account_id_hex,
-            account_type: account_type.to_string(),
+            storage_mode: account_type.to_string(),
+            account_type: String::new(), // Will be filled in by the serve layer from the store
             assets,
         })
     }

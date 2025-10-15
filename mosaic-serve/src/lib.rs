@@ -54,7 +54,7 @@ impl Serve {
     pub async fn list_accounts(
         &self,
         secret: [u8; 32],
-    ) -> Result<Vec<(String, String)>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<(String, String, String)>, Box<dyn std::error::Error>> {
         let mut all_accounts = Vec::new();
 
         // Check both testnet and localnet directories
@@ -68,8 +68,8 @@ impl Serve {
             let store = mosaic_miden::store::Store::new(&store_path)?;
             let accounts = store.list_accounts()?;
 
-            for (account_id, network_str, _typ) in accounts {
-                all_accounts.push((account_id, network_str));
+            for (account_id, network_str, account_type) in accounts {
+                all_accounts.push((account_id, network_str, account_type));
             }
         }
 
@@ -332,11 +332,25 @@ impl Serve {
             }
         };
 
-        // Get account status
-        let account_status = client_handle
+        // Get account type from the store
+        let store_path = self.store_path(secret, network);
+        let store = mosaic_miden::store::Store::new(&store_path)?;
+        let all_accounts = store.list_accounts()?;
+
+        let account_type = all_accounts
+            .iter()
+            .find(|(id, _, _)| id == &account_id_bech32)
+            .map(|(_, _, typ)| typ.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+
+        // Get account status from client
+        let mut account_status = client_handle
             .get_account_status(account_id)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get account status: {}", e))?;
+
+        // Update with the actual account type from the store
+        account_status.account_type = account_type;
 
         Ok(account_status)
     }

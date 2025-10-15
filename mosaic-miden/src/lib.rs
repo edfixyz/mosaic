@@ -38,8 +38,9 @@ pub struct AssetData {
 pub struct AccountStatusData {
     /// Account ID in bech32 format
     pub account_id: String,
-    /// Account type: "Private" or "Public"
-    #[serde(rename = "type")]
+    /// Storage mode: "Private" or "Public"
+    pub storage_mode: String,
+    /// Account type: "Client", "Desk", "Liquidity", or "Faucet"
     pub account_type: String,
     /// List of assets held by the account
     pub assets: Vec<AssetData>,
