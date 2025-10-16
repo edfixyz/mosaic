@@ -1,13 +1,27 @@
-use mosaic_fi::AccountType;
-use mosaic_fi::note::{Market, MosaicNote, MosaicNoteStatus};
+use mosaic_fi::note::{MosaicNote, MosaicNoteStatus};
+use mosaic_fi::{AccountType, Market};
 use mosaic_miden::client::ClientHandle;
 use mosaic_miden::{MidenTransactionId, Network};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use uuid::Uuid;
+
+pub mod desk_store;
+use desk_store::DeskStore;
+
+/// Desk metadata cached in memory
+pub struct DeskMetadata {
+    pub client_handle: ClientHandle,
+    pub account_id: String,
+    pub network: Network,
+    pub market: Market,
+}
 
 pub struct Serve {
     store_path: PathBuf,
+    desk_store_path: PathBuf,
     clients: HashMap<([u8; 32], Network), ClientHandle>,
+    desks: HashMap<Uuid, DeskMetadata>,
 }
 
 impl Serve {
@@ -15,13 +29,237 @@ impl Serve {
         let store_path = path.as_ref().to_path_buf();
 
         if !store_path.exists() {
-            return Err(ServeError::PathNotFound(store_path));
+            return Err(ServeError::PathNotFound(store_path.clone()));
         }
+
+        // Global desk store at the project root (parent of store_path)
+        let desk_store_path = store_path.join("mosaic_top.sqlite3");
 
         Ok(Serve {
             store_path,
+            desk_store_path,
             clients: HashMap::new(),
+            desks: HashMap::new(),
         })
+    }
+
+    /// Initialize the desk store and restore all desks from the database
+    pub async fn init_desks(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let desk_store = DeskStore::new(&self.desk_store_path)?;
+        let desks = desk_store.list_desks()?;
+
+        tracing::info!(desk_count = desks.len(), "Restoring desks from database");
+
+        for (uuid, path, network, market) in desks {
+            tracing::info!(
+                uuid = %uuid,
+                path = %path.display(),
+                network = ?network,
+                "Restoring desk"
+            );
+
+            match ClientHandle::spawn(path.clone(), network).await {
+                Ok(client_handle) => {
+                    // Get the desk's account ID
+                    let store_path = path.join("mosaic.sqlite3");
+                    match mosaic_miden::store::Store::new(&store_path) {
+                        Ok(store) => {
+                            match store.list_accounts() {
+                                Ok(accounts) => {
+                                    // Find the Desk account
+                                    if let Some((account_id, _, _)) =
+                                        accounts.iter().find(|(_, _, acc_type)| acc_type == "Desk")
+                                    {
+                                        let metadata = DeskMetadata {
+                                            client_handle,
+                                            account_id: account_id.clone(),
+                                            network,
+                                            market,
+                                        };
+                                        self.desks.insert(uuid, metadata);
+                                        tracing::info!(
+                                            uuid = %uuid,
+                                            account_id = %account_id,
+                                            "Successfully restored desk"
+                                        );
+                                    } else {
+                                        tracing::error!(
+                                            uuid = %uuid,
+                                            path = %path.display(),
+                                            "Desk account not found in store"
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        error = %e,
+                                        uuid = %uuid,
+                                        path = %path.display(),
+                                        "Failed to list accounts"
+                                    );
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                error = %e,
+                                uuid = %uuid,
+                                path = %path.display(),
+                                "Failed to open store"
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        error = %e,
+                        uuid = %uuid,
+                        path = %path.display(),
+                        "Failed to spawn client handle"
+                    );
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Create a new desk account and register it in the desk store
+    pub async fn new_desk_account(
+        &mut self,
+        secret: [u8; 32],
+        network: Network,
+        market: Market,
+    ) -> Result<(Uuid, String), Box<dyn std::error::Error>> {
+        let uuid = Uuid::new_v4();
+        let path = self.client_path(secret, network);
+        Self::check_or_create(&path)?;
+
+        let client_handle = self.get_client(secret, network).await?;
+
+        // Create the account
+        let account = client_handle
+            .create_account()
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to create account: {}", e))?;
+
+        let account_id = account.id();
+        let address = miden_objects::address::AccountIdAddress::new(
+            account_id,
+            miden_objects::address::AddressInterface::Unspecified,
+        );
+
+        let network_id = network.to_network_id();
+        let account_id_bech32 =
+            miden_objects::address::Address::from(address).to_bech32(network_id);
+
+        // Store in account SQLite database
+        let store_path = self.store_path(secret, network);
+        let store = mosaic_miden::store::Store::new(&store_path)?;
+        store.insert_account(&account_id_bech32, network, "Desk")?;
+
+        // Store in global desk database
+        let desk_store = DeskStore::new(&self.desk_store_path)?;
+        desk_store.insert_desk(uuid, &path, network, &market)?;
+
+        // Add to in-memory desk map with metadata
+        let metadata = DeskMetadata {
+            client_handle: client_handle.clone(),
+            account_id: account_id_bech32.clone(),
+            network,
+            market: market.clone(),
+        };
+        self.desks.insert(uuid, metadata);
+
+        tracing::info!(
+            uuid = %uuid,
+            account_id = %account_id_bech32,
+            network = ?network,
+            base = %market.base.code,
+            quote = %market.quote.code,
+            "Created new desk account"
+        );
+
+        Ok((uuid, account_id_bech32))
+    }
+
+    /// Get a desk client handle by UUID
+    pub fn get_desk(&self, uuid: Uuid) -> Option<&ClientHandle> {
+        self.desks
+            .get(&uuid)
+            .map(|metadata| &metadata.client_handle)
+    }
+
+    /// List all desks
+    pub fn list_desks(&self) -> Vec<Uuid> {
+        self.desks.keys().copied().collect()
+    }
+
+    /// Push a note to a desk's note store
+    pub async fn desk_push_note(
+        &self,
+        desk_uuid: Uuid,
+        note: MosaicNote,
+    ) -> Result<i64, Box<dyn std::error::Error>> {
+        // Get the desk path from the global desk store
+        let desk_store = desk_store::DeskStore::new(&self.desk_store_path)?;
+        let (desk_path, _network, _market) = desk_store
+            .get_desk(desk_uuid)?
+            .ok_or_else(|| anyhow::anyhow!("Desk not found: {}", desk_uuid))?;
+
+        // Open the desk's note store
+        let desk_note_store_path = desk_path.join("desk_notes.sqlite3");
+        let desk_note_store = desk_store::DeskNoteStore::new(&desk_note_store_path)?;
+
+        // Insert the note with 'new' status
+        let note_id = desk_note_store.insert_note(&note, desk_store::NoteStatus::New)?;
+
+        tracing::info!(
+            desk_uuid = %desk_uuid,
+            note_id = note_id,
+            "Pushed note to desk"
+        );
+
+        Ok(note_id)
+    }
+
+    /// Get all notes from a desk
+    pub async fn desk_get_notes(
+        &self,
+        desk_uuid: Uuid,
+    ) -> Result<Vec<(i64, MosaicNote, desk_store::NoteStatus)>, Box<dyn std::error::Error>> {
+        // Get the desk path from the global desk store
+        let desk_store = desk_store::DeskStore::new(&self.desk_store_path)?;
+        let (desk_path, _network, _market) = desk_store
+            .get_desk(desk_uuid)?
+            .ok_or_else(|| anyhow::anyhow!("Desk not found: {}", desk_uuid))?;
+
+        // Open the desk's note store
+        let desk_note_store_path = desk_path.join("desk_notes.sqlite3");
+        let desk_note_store = desk_store::DeskNoteStore::new(&desk_note_store_path)?;
+
+        // Get all notes
+        let notes = desk_note_store.get_all_notes()?;
+
+        Ok(notes)
+    }
+
+    /// Get desk information including market data from in-memory cache
+    pub async fn get_desk_info(
+        &self,
+        desk_uuid: Uuid,
+    ) -> Result<(String, Network, Market), Box<dyn std::error::Error>> {
+        // Get the desk metadata from in-memory cache
+        let metadata = self
+            .desks
+            .get(&desk_uuid)
+            .ok_or_else(|| anyhow::anyhow!("Desk not found: {}", desk_uuid))?;
+
+        Ok((
+            metadata.account_id.clone(),
+            metadata.network,
+            metadata.market.clone(),
+        ))
     }
 
     fn secret_to_string(secret: [u8; 32]) -> String {
@@ -430,6 +668,7 @@ impl Serve {
 #[derive(Debug)]
 pub enum ServeError {
     PathNotFound(PathBuf),
+    InvalidPath(String),
 }
 
 impl std::fmt::Display for ServeError {
@@ -438,16 +677,11 @@ impl std::fmt::Display for ServeError {
             ServeError::PathNotFound(path) => {
                 write!(f, "Store path does not exist: {}", path.display())
             }
+            ServeError::InvalidPath(msg) => {
+                write!(f, "Invalid path: {}", msg)
+            }
         }
     }
 }
 
 impl std::error::Error for ServeError {}
-
-pub async fn post_note(_market: Market, _note: MosaicNote) -> Result<(), ()> {
-    Ok(())
-}
-
-pub async fn get_notes(_market: Market) -> Result<Vec<MosaicNote>, ()> {
-    Ok(vec![])
-}
