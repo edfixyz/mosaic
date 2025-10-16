@@ -171,6 +171,105 @@ pub struct FlushRequest {}
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct VersionRequest {}
 
+// Response types
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct CreateClientAccountResponse {
+    pub success: bool,
+    pub account_id: String,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct CreateDeskAccountResponse {
+    pub success: bool,
+    pub account_id: String,
+    pub desk_uuid: String,
+    pub market: mosaic_fi::Market,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct CreateLiquidityAccountResponse {
+    pub success: bool,
+    pub account_id: String,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct CreateFaucetAccountResponse {
+    pub success: bool,
+    pub account_id: String,
+    pub token_symbol: String,
+    pub decimals: u8,
+    pub max_supply: u64,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct AccountInfo {
+    pub account_id: String,
+    pub network: String,
+    pub account_type: String,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct ListAccountsResponse {
+    pub success: bool,
+    pub accounts: Vec<AccountInfo>,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct ClientSyncResponse {
+    pub success: bool,
+    pub block_num: u32,
+    pub new_public_notes: u32,
+    pub committed_notes: u32,
+    pub consumed_notes: u32,
+    pub updated_accounts: u32,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct CreatePrivateNoteResponse {
+    pub success: bool,
+    pub note: mosaic_fi::note::MosaicNote,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct CreateNoteFromMasmResponse {
+    pub success: bool,
+    pub note: mosaic_miden::note::MidenNote,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct ConsumeNoteResponse {
+    pub success: bool,
+    pub transaction_id: String,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct DeskPushNoteResponse {
+    pub success: bool,
+    pub desk_uuid: String,
+    pub note_id: i64,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct GetDeskInfoResponse {
+    pub success: bool,
+    pub desk_uuid: String,
+    pub account_id: String,
+    pub network: String,
+    pub market: mosaic_fi::Market,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct FlushResponse {
+    pub success: bool,
+    pub clients_flushed: usize,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct VersionResponse {
+    pub success: bool,
+    pub version: String,
+}
+
 #[derive(Clone)]
 pub struct Mosaic {
     serve: Arc<Mutex<Serve>>,
@@ -260,10 +359,18 @@ impl Mosaic {
             "Created client account"
         );
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Client account created successfully!\nSecret: {}\nAccount ID (bech32): {}",
-            req.secret, account_id_bech32
-        ))]))
+        let response = CreateClientAccountResponse {
+            success: true,
+            account_id: account_id_bech32,
+        };
+
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(description = "Create a new Desk account with market information")]
@@ -331,10 +438,20 @@ impl Mosaic {
             "Created desk account"
         );
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Desk account created successfully!\nSecret: {}\nAccount ID (bech32): {}\nDesk UUID: {}\nMarket: {}/{}",
-            req.secret, account_id_bech32, uuid, req.market.base.code, req.market.quote.code
-        ))]))
+        let response = CreateDeskAccountResponse {
+            success: true,
+            account_id: account_id_bech32,
+            desk_uuid: uuid.to_string(),
+            market: req.market,
+        };
+
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(description = "Create a new Liquidity account")]
@@ -399,10 +516,18 @@ impl Mosaic {
             "Created liquidity account"
         );
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Liquidity account created successfully!\nSecret: {}\nAccount ID (bech32): {}",
-            req.secret, account_id_bech32
-        ))]))
+        let response = CreateLiquidityAccountResponse {
+            success: true,
+            account_id: account_id_bech32,
+        };
+
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(
@@ -479,10 +604,21 @@ impl Mosaic {
             "Created faucet account"
         );
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Faucet account created successfully!\nSecret: {}\nAccount ID (bech32): {}\nToken: {} (decimals: {}, max supply: {})",
-            req.secret, account_id_bech32, req.token_symbol, req.decimals, req.max_supply
-        ))]))
+        let response = CreateFaucetAccountResponse {
+            success: true,
+            account_id: account_id_bech32,
+            token_symbol: req.token_symbol,
+            decimals: req.decimals,
+            max_supply: req.max_supply,
+        };
+
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(description = "List all account IDs (bech32) with their networks for a given secret")]
@@ -525,25 +661,27 @@ impl Mosaic {
             "Listed accounts"
         );
 
-        if accounts.is_empty() {
-            return Ok(CallToolResult::success(vec![Content::text(format!(
-                "No accounts found for secret: {}",
-                req.secret
-            ))]));
-        }
-
-        let mut response = format!("Accounts for secret {}:\n\n", req.secret);
-        for (i, (account_id, network, account_type)) in accounts.iter().enumerate() {
-            response.push_str(&format!(
-                "{}. Account ID: {}\n   Network: {}\n   Type: {}\n\n",
-                i + 1,
+        let account_infos: Vec<AccountInfo> = accounts
+            .into_iter()
+            .map(|(account_id, network, account_type)| AccountInfo {
                 account_id,
                 network,
-                account_type
-            ));
-        }
+                account_type,
+            })
+            .collect();
 
-        Ok(CallToolResult::success(vec![Content::text(response)]))
+        let response = ListAccountsResponse {
+            success: true,
+            accounts: account_infos,
+        };
+
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(description = "Sync a client's state with the network for a given secret and network")]
@@ -612,16 +750,22 @@ impl Mosaic {
             "Client synced"
         );
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Client synced successfully!\nSecret: {}\nNetwork: {}\nBlock: {}\nNew public notes: {}\nCommitted notes: {}\nConsumed notes: {}\nUpdated accounts: {}",
-            req.secret,
-            req.network,
-            sync_result.block_num,
-            sync_result.new_public_notes.len(),
-            sync_result.committed_notes.len(),
-            sync_result.consumed_notes.len(),
-            sync_result.updated_accounts.len()
-        ))]))
+        let response = ClientSyncResponse {
+            success: true,
+            block_num: sync_result.block_num.as_u32(),
+            new_public_notes: sync_result.new_public_notes.len() as u32,
+            committed_notes: sync_result.committed_notes.len() as u32,
+            consumed_notes: sync_result.consumed_notes.len() as u32,
+            updated_accounts: sync_result.updated_accounts.len() as u32,
+        };
+
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(
@@ -693,17 +837,18 @@ impl Mosaic {
             "Created and committed private note"
         );
 
-        // Serialize the note to JSON for the response
-        let note_json = serde_json::to_string_pretty(&mosaic_note).map_err(|e| {
-            let error_msg = format!("Failed to serialize note: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize note");
+        let response = CreatePrivateNoteResponse {
+            success: true,
+            note: mosaic_note,
+        };
+
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
             McpError::internal_error(error_msg, None)
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Private note created successfully!\nSecret: {}\nNetwork: {}\nAccount ID: {}\n\nNote:\n{}",
-            req.secret, req.network, req.account_id, note_json
-        ))]))
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(
@@ -799,17 +944,18 @@ impl Mosaic {
             "Created and committed note from MASM"
         );
 
-        // Serialize the note to JSON for the response
-        let note_json = serde_json::to_string_pretty(&miden_note).map_err(|e| {
-            let error_msg = format!("Failed to serialize note: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize note");
+        let response = CreateNoteFromMasmResponse {
+            success: true,
+            note: miden_note,
+        };
+
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
             McpError::internal_error(error_msg, None)
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Note created from MASM successfully!\nSecret: {}\nNetwork: {}\nAccount ID: {}\n\nNote:\n{}",
-            req.secret, req.network, req.account_id, note_json
-        ))]))
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(
@@ -901,10 +1047,7 @@ impl Mosaic {
             McpError::internal_error(error_msg, None)
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Account status:\n{}",
-            response_json
-        ))]))
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(
@@ -1003,10 +1146,18 @@ impl Mosaic {
             "MCP tools layer: Note consumed successfully"
         );
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Note consumed successfully!\nSecret: {}\nNetwork: {}\nAccount ID: {}\nTransaction ID: {}",
-            req.secret, req.network, req.account_id, transaction_id
-        ))]))
+        let response = ConsumeNoteResponse {
+            success: true,
+            transaction_id,
+        };
+
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(description = "Push a Mosaic note to a desk's note store")]
@@ -1045,10 +1196,19 @@ impl Mosaic {
             "Pushed note to desk"
         );
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Note pushed to desk successfully!\nDesk UUID: {}\nNote ID: {}",
-            desk_uuid, note_id
-        ))]))
+        let response = DeskPushNoteResponse {
+            success: true,
+            desk_uuid: desk_uuid.to_string(),
+            note_id,
+        };
+
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(description = "Get desk information including account ID, network, and market data")]
@@ -1084,36 +1244,24 @@ impl Mosaic {
             "Retrieved desk info"
         );
 
-        // Serialize the response
-        let response = serde_json::json!({
-            "desk_uuid": desk_uuid.to_string(),
-            "account_id": account_id,
-            "network": match network {
-                Network::Testnet => "Testnet",
-                Network::Localnet => "Localnet",
+        let response = GetDeskInfoResponse {
+            success: true,
+            desk_uuid: desk_uuid.to_string(),
+            account_id,
+            network: match network {
+                Network::Testnet => "Testnet".to_string(),
+                Network::Localnet => "Localnet".to_string(),
             },
-            "market": {
-                "base": {
-                    "code": market.base.code,
-                    "issuer": market.base.issuer
-                },
-                "quote": {
-                    "code": market.quote.code,
-                    "issuer": market.quote.issuer
-                }
-            }
-        });
+            market,
+        };
 
         let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize desk info: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize desk info");
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
             McpError::internal_error(error_msg, None)
         })?;
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Desk information:\n{}",
-            response_json
-        ))]))
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(description = "Flush all cached clients and in-memory objects")]
@@ -1132,10 +1280,18 @@ impl Mosaic {
             "Flushed cache"
         );
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Cache flushed successfully!\nClients cleared: {}",
-            client_count
-        ))]))
+        let response = FlushResponse {
+            success: true,
+            clients_flushed: client_count,
+        };
+
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 
     #[tool(description = "Get the current Mosaic version string")]
@@ -1151,10 +1307,18 @@ impl Mosaic {
             "Version requested"
         );
 
-        Ok(CallToolResult::success(vec![Content::text(format!(
-            "Mosaic version: {}",
-            version
-        ))]))
+        let response = VersionResponse {
+            success: true,
+            version: version.to_string(),
+        };
+
+        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
+            let error_msg = format!("Failed to serialize response: {}", e);
+            tracing::error!(error = %error_msg, "Failed to serialize response");
+            McpError::internal_error(error_msg, None)
+        })?;
+
+        Ok(CallToolResult::success(vec![Content::text(response_json)]))
     }
 }
 
