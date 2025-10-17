@@ -1814,6 +1814,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]
@@ -1850,8 +1851,11 @@ dependencies = [
  "mosaic-fi",
  "mosaic-miden",
  "rand",
+ "rusqlite",
+ "serde_json",
  "tokio",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1860,8 +1864,10 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "clap",
+ "futures",
  "mosaic-fi",
  "mosaic-mcp",
+ "mosaic-miden",
  "mosaic-serve",
  "rmcp",
  "serde",
@@ -1870,6 +1876,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-subscriber",
+ "uuid",
 ]
 
 [[package]]

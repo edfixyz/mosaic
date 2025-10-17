@@ -7,6 +7,7 @@ edition = "2024"
 mosaic-serve = { path = "../mosaic-serve" }
 mosaic-fi = { path = "../mosaic-fi" }
 mosaic-mcp = { path = "../mosaic-mcp" }
+mosaic-miden = { path = "../mosaic-miden" }
 tokio = { version = "1.46", features = ["rt-multi-thread", "net", "macros", "fs", "signal"] }
 tokio-util = "0.7"
 axum = { version = "0.8", features = ["macros"] }
@@ -22,4 +23,6 @@ rmcp = { version = "0.8.1", features = [
     "transport-streamable-http-server",
     "schemars",
 ] }
+uuid = { version = "1.11", features = ["v4", "serde"] }
+futures = "0.3"
 

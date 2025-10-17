@@ -74,14 +74,14 @@ pub enum Order {
     },
 }
 
-#[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
+#[derive(PartialEq, Serialize, Deserialize, schemars::JsonSchema, Debug, Clone)]
 pub enum MosaicNoteStatus {
     New,
     Committed(MidenTransactionId),
     Consumed(MidenTransactionId, MidenTransactionId),
 }
 
-#[derive(PartialEq, Serialize, Deserialize, Debug, Clone)]
+#[derive(PartialEq, Serialize, Deserialize, schemars::JsonSchema, Debug, Clone)]
 pub struct MosaicNote {
     pub status: MosaicNoteStatus,
     pub recipient: Recipient,
