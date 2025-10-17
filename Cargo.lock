@@ -675,9 +675,9 @@ dependencies = [
 
 [[package]]
 name = "fstr"
-version = "0.2.14"
+version = "0.2.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53360f36a6b540355748cd42397b872e66105f0adc2742b59baf32f3e2233867"
+checksum = "fa16da5411b972ad442cbadc4e55f5acd0b7b31edf64ac34efe34efee5cdbbfb"
 
 [[package]]
 name = "futures"
@@ -1370,9 +1370,9 @@ dependencies = [
 
 [[package]]
 name = "miden-client"
-version = "0.11.9"
+version = "0.11.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f07f391499de2ab3859cbcdc248e2152db07cd776a8aafba1cc4819050fea91f"
+checksum = "d08825dd90a4616544cffcfd27bf1f90ca16c6babfb151ab2444c27e2eed1cc2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1767,13 +1767,13 @@ dependencies = [
 
 [[package]]
 name = "mio"
-version = "1.0.4"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78bed444cc8a2160f01cbcf811ef18cac863ad68ae8ca62092e8db51d51c761c"
+checksum = "69d83b0086dc8ecf3ce9ae2874b2d1290252e2a30720bea58a5c6639b0092873"
 dependencies = [
  "libc",
  "wasi",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2570,9 +2570,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.32"
+version = "0.23.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cd3c25631629d034ce7cd9940adc9d45762d46de2b0f57193c4443b92c6d4d40"
+checksum = "751e04a496ca00bb97a5e043158d23d66b5aabf2e1d5aa2a0aaebb1aafe6f82c"
 dependencies = [
  "log",
  "once_cell",
