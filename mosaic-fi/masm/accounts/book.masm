@@ -1,23 +1,35 @@
 use.miden::account
 use.std::sys
 
-# Counter Slot
-const.COUNTER_SLOT = 0
+# Configuration
+const.CONFIG_VERSION = 0
+const.CONFIG_BASE = 1
+const.CONFIG_QUOTE = 2
+const.CONFIG_NAME = 3
+const.CONFIG_RESERVED = 4
 
-# Book
-const.BOOK_SLOT = 1
+# Sell side
+const.COUNTER_SLOT_SELL = 5
+const.BOOK_SLOT_SELL = 6
+const.BOOK_HEAD_SLOT_SELL = 7
+const.BOOK_RESERVED0_SELL = 8
+const.BOOK_RESERVED1_SELL = 9
 
-# First entry
-const.BOOK_HEAD_SLOT = 2
+# Buy side
+const.COUNTER_SLOT_BUY = 10
+const.BOOK_SLOT_BUY = 11
+const.BOOK_HEAD_SLOT_BUY = 12
+const.BOOK_RESERVED0_SELL = 13
+const.BOOK_RESERVED1_SELL = 14
 
 # Book slot format: map [0, 0, 0, this_id] -> [previous_id, next_id, price, amount]
 # Book head slot format: [zero, zero, zero, this_id]
 
 #
-# Insert an offer
+# Insert an offer (side: SELL)
 #   TODO: store INTENT_UUID
 #
-export.insert_offer
+export.insert_offer_sell
     # => [INTENT_UUID, price, amount]
 
     dropw
@@ -89,6 +101,7 @@ export.insert_offer
         end # End loop
     end
 end
+
 
 #
 # Insert before the current_id entry (cannot be null)
