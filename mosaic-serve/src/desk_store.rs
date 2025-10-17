@@ -12,16 +12,22 @@ pub enum NoteStatus {
     Invalid,
 }
 
-impl NoteStatus {
-    pub fn as_str(&self) -> &'static str {
+pub type DeskNoteRecord = (i64, MosaicNote, NoteStatus);
+
+impl AsRef<str> for NoteStatus {
+    fn as_ref(&self) -> &str {
         match self {
             NoteStatus::New => "new",
             NoteStatus::Consumed => "consumed",
             NoteStatus::Invalid => "invalid",
         }
     }
+}
 
-    pub fn from_str(s: &str) -> Result<Self, String> {
+impl std::str::FromStr for NoteStatus {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "new" => Ok(NoteStatus::New),
             "consumed" => Ok(NoteStatus::Consumed),
@@ -253,7 +259,7 @@ impl DeskNoteStore {
 
         self.conn.execute(
             "INSERT INTO notes (note_json, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4)",
-            params![note_json, status.as_str(), now, now],
+            params![note_json, status.as_ref(), now, now],
         )?;
 
         Ok(self.conn.last_insert_rowid())
@@ -271,7 +277,7 @@ impl DeskNoteStore {
 
         self.conn.execute(
             "UPDATE notes SET status = ?1, updated_at = ?2 WHERE id = ?3",
-            params![status.as_str(), now, note_id],
+            params![status.as_ref(), now, note_id],
         )?;
 
         Ok(())
@@ -286,7 +292,7 @@ impl DeskNoteStore {
             "SELECT id, note_json FROM notes WHERE status = ?1 ORDER BY created_at DESC",
         )?;
 
-        let notes_iter = stmt.query_map(params![status.as_str()], |row| {
+        let notes_iter = stmt.query_map(params![status.as_ref()], |row| {
             let id: i64 = row.get(0)?;
             let note_json: String = row.get(1)?;
             Ok((id, note_json))
@@ -309,9 +315,7 @@ impl DeskNoteStore {
     }
 
     /// Get all notes
-    pub fn get_all_notes(
-        &self,
-    ) -> Result<Vec<(i64, MosaicNote, NoteStatus)>, Box<dyn std::error::Error>> {
+    pub fn get_all_notes(&self) -> Result<Vec<DeskNoteRecord>, Box<dyn std::error::Error>> {
         let mut stmt = self
             .conn
             .prepare("SELECT id, note_json, status FROM notes ORDER BY created_at DESC")?;
@@ -333,7 +337,7 @@ impl DeskNoteStore {
                     Box::new(e),
                 )
             })?;
-            let status = NoteStatus::from_str(&status_str).map_err(|e| {
+            let status = status_str.parse::<NoteStatus>().map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(
                     2,
                     rusqlite::types::Type::Text,
@@ -364,7 +368,7 @@ impl DeskNoteStore {
         match result {
             Ok((note_json, status_str)) => {
                 let note: MosaicNote = serde_json::from_str(&note_json)?;
-                let status = NoteStatus::from_str(&status_str)?;
+                let status = status_str.parse::<NoteStatus>()?;
                 Ok(Some((note, status)))
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),

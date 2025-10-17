@@ -227,7 +227,7 @@ impl Serve {
     pub async fn desk_get_notes(
         &self,
         desk_uuid: Uuid,
-    ) -> Result<Vec<(i64, MosaicNote, desk_store::NoteStatus)>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<desk_store::DeskNoteRecord>, Box<dyn std::error::Error>> {
         // Get the desk path from the global desk store
         let desk_store = desk_store::DeskStore::new(&self.desk_store_path)?;
         let (desk_path, _network, _market) = desk_store
