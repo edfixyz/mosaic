@@ -24,8 +24,7 @@ const dmMono = DM_Mono({
 
 export const metadata: Metadata = {
   title: "Mosaic - Edge Finance OTC Desk",
-  description: "Professional OTC trading desk for digital assets",
-  generator: "v0.app",
+  description: "Private OTC trading desk - Private Trades, Public Trust"
 }
 
 export default function RootLayout({
