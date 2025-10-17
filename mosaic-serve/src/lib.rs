@@ -417,6 +417,7 @@ impl Serve {
         network: Network,
         account_id_bech32: String,
         order: mosaic_fi::note::Order,
+        commit: bool,
     ) -> Result<MosaicNote, Box<dyn std::error::Error>> {
         let client_handle = self.get_client(secret, network).await?;
 
@@ -439,12 +440,14 @@ impl Serve {
 
         let mut mosaic_note = mosaic_fi::note::compile_note_from_account_id(account_id, order)?;
 
-        let tx_commit_id = client_handle
-            .commit_note(account_id, mosaic_note.miden_note.miden_note_hex.clone())
-            .await
-            .map_err(|e| anyhow::anyhow!("Failed to commit note: {}", e))?;
+        if commit {
+            let tx_commit_id = client_handle
+                .commit_note(account_id, mosaic_note.miden_note.miden_note_hex.clone())
+                .await
+                .map_err(|e| anyhow::anyhow!("Failed to commit note: {}", e))?;
 
-        mosaic_note.status = MosaicNoteStatus::Committed(tx_commit_id);
+            mosaic_note.status = MosaicNoteStatus::Committed(tx_commit_id);
+        }
 
         Ok(mosaic_note)
     }

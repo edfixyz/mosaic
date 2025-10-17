@@ -71,8 +71,12 @@ pub struct ClientSyncRequest {
     pub network: String,
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CreatePrivateNoteRequest {
+pub struct CreateOrderRequest {
     /// 32-byte secret as a hex string (64 characters)
     pub secret: String,
     /// Network: "Testnet" or "Localnet"
@@ -81,10 +85,13 @@ pub struct CreatePrivateNoteRequest {
     pub account_id: String,
     /// Order as JSON object (e.g., {"LiquidityOffer": {"market": "BTC/USD", "uuid": 12345, "amount": 1000, "price": 50000}})
     pub order: mosaic_fi::note::Order,
+    /// Whether to commit the note after creation (default: true)
+    #[serde(default = "default_true")]
+    pub commit: bool,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CreateNoteFromMasmRequest {
+pub struct CreateRawNoteRequest {
     /// 32-byte secret as a hex string (64 characters)
     pub secret: String,
     /// Network: "Testnet" or "Localnet"
@@ -225,13 +232,13 @@ pub struct ClientSyncResponse {
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct CreatePrivateNoteResponse {
+pub struct CreateOrderResponse {
     pub success: bool,
     pub note: mosaic_fi::note::MosaicNote,
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct CreateNoteFromMasmResponse {
+pub struct CreateRawNoteResponse {
     pub success: bool,
     pub note: mosaic_miden::note::MidenNote,
 }
@@ -769,11 +776,11 @@ impl Mosaic {
     }
 
     #[tool(
-        description = "Create a private note from an order for a given secret, network, and account"
+        description = "Create an order note for a given secret, network, and account. Optionally commit it to the network."
     )]
-    async fn create_private_note(
+    async fn create_order(
         &self,
-        Parameters(req): Parameters<CreatePrivateNoteRequest>,
+        Parameters(req): Parameters<CreateOrderRequest>,
     ) -> Result<CallToolResult, McpError> {
         // Parse hex secret
         let secret_bytes = hex::decode(&req.secret).map_err(|e| {
@@ -815,29 +822,31 @@ impl Mosaic {
         let mosaic_note = {
             let mut serve = self.serve.lock().await;
             serve
-                .create_private_note(secret, network, req.account_id.clone(), order)
+                .create_private_note(secret, network, req.account_id.clone(), order, req.commit)
                 .await
                 .map_err(|e| {
-                    let error_msg = format!("Failed to create private note: {}", e);
+                    let error_msg = format!("Failed to create order note: {}", e);
                     tracing::error!(
                         error = %error_msg,
                         account_id = %req.account_id,
                         network = %req.network,
-                        "Failed to create private note"
+                        commit = req.commit,
+                        "Failed to create order note"
                     );
                     McpError::internal_error(error_msg, None)
                 })?
         };
 
         tracing::info!(
-            tool = "create_private_note",
+            tool = "create_order",
             account_id = %req.account_id,
             network = %req.network,
             recipient = ?mosaic_note.recipient,
-            "Created and committed private note"
+            commit = req.commit,
+            "Created order note"
         );
 
-        let response = CreatePrivateNoteResponse {
+        let response = CreateOrderResponse {
             success: true,
             note: mosaic_note,
         };
@@ -852,11 +861,11 @@ impl Mosaic {
     }
 
     #[tool(
-        description = "Create a note from low-level MASM code and inputs for a given secret, network, and account"
+        description = "Create a raw note from low-level MASM code and inputs for a given secret, network, and account"
     )]
-    async fn create_note_from_masm(
+    async fn create_raw_note(
         &self,
-        Parameters(req): Parameters<CreateNoteFromMasmRequest>,
+        Parameters(req): Parameters<CreateRawNoteRequest>,
     ) -> Result<CallToolResult, McpError> {
         // Parse hex secret
         let secret_bytes = hex::decode(&req.secret).map_err(|e| {
@@ -937,14 +946,14 @@ impl Mosaic {
         };
 
         tracing::info!(
-            tool = "create_note_from_masm",
+            tool = "create_raw_note",
             account_id = %req.account_id,
             network = %req.network,
             note_type = %req.note_type,
-            "Created and committed note from MASM"
+            "Created and committed raw note from MASM"
         );
 
-        let response = CreateNoteFromMasmResponse {
+        let response = CreateRawNoteResponse {
             success: true,
             note: miden_note,
         };
