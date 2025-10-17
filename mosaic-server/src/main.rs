@@ -19,6 +19,8 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod helper;
+
 #[derive(Parser, Debug)]
 #[command(name = "mosaic-server")]
 #[command(about = "Mosaic server with MCP and REST endpoints", long_about = None)]
@@ -348,6 +350,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Create storage directory if it doesn't exist
     std::fs::create_dir_all(&args.storage_path)?;
+
+    println!("{}", helper::MOSAIC_BANNER);
 
     match (args.mcp, args.rest) {
         (true, false) => {
