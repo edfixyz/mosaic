@@ -33,8 +33,8 @@ impl Store {
         account_type: &str,
     ) -> SqliteResult<()> {
         let network_str = match network {
-            Network::Testnet => "testnet",
-            Network::Localnet => "localnet",
+            Network::Testnet => "Testnet",
+            Network::Localnet => "Localnet",
         };
 
         self.conn.execute(
@@ -70,8 +70,8 @@ impl Store {
         network: Network,
     ) -> SqliteResult<Vec<(String, String)>> {
         let network_str = match network {
-            Network::Testnet => "testnet",
-            Network::Localnet => "localnet",
+            Network::Testnet => "Testnet",
+            Network::Localnet => "Localnet",
         };
 
         let mut stmt = self

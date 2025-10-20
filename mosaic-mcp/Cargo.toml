@@ -32,3 +32,4 @@ tracing-subscriber = { version = "0.3", features = [
 axum = { version = "0.8", features = ["macros"] }
 hex = "0.4"
 uuid = { version = "1.11", features = ["v4", "serde"] }
+sha2 = "0.10"

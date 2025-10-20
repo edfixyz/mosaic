@@ -17,18 +17,60 @@ use rmcp::{
 };
 use tokio::sync::Mutex;
 
+/// Helper function to extract authenticated user ID from request context and derive a 32-byte secret
+fn derive_secret_from_context(context: &RequestContext<RoleServer>) -> Result<[u8; 32], McpError> {
+    // Extract user_id from request extensions (set by OAuth middleware)
+    let user_id = if let Some(http_parts) = context.extensions.get::<axum::http::request::Parts>() {
+        http_parts
+            .extensions
+            .get::<String>()
+            .ok_or_else(|| {
+                McpError::invalid_request(
+                    "Missing user_id in request. Authentication required.".to_string(),
+                    None,
+                )
+            })?
+            .clone()
+    } else {
+        return Err(McpError::invalid_request(
+            "Missing HTTP request context. This tool requires authentication.".to_string(),
+            None,
+        ));
+    };
+
+    tracing::debug!(user_id = %user_id, "Deriving secret from authenticated user");
+
+    // Derive 32-byte secret from user_id using SHA-256
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(user_id.as_bytes());
+    let result = hasher.finalize();
+
+    let mut secret = [0u8; 32];
+    secret.copy_from_slice(&result);
+
+    Ok(secret)
+}
+
+fn json_content<T: serde::Serialize>(
+    value: &T,
+    context: &'static str,
+) -> Result<Content, McpError> {
+    Content::json(value).map_err(|e| {
+        let error_msg = format!("Failed to serialize {context}: {e}");
+        tracing::error!(error = %error_msg, "Failed to serialize response content");
+        McpError::internal_error(error_msg, None)
+    })
+}
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateClientAccountRequest {
-    /// 32-byte secret as a hex string (64 characters)
-    pub secret: String,
     /// Network: "Testnet" or "Localnet"
     pub network: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateDeskAccountRequest {
-    /// 32-byte secret as a hex string (64 characters)
-    pub secret: String,
     /// Network: "Testnet" or "Localnet"
     pub network: String,
     /// Market information with base and quote currencies
@@ -37,16 +79,12 @@ pub struct CreateDeskAccountRequest {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateLiquidityAccountRequest {
-    /// 32-byte secret as a hex string (64 characters)
-    pub secret: String,
     /// Network: "Testnet" or "Localnet"
     pub network: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateFaucetAccountRequest {
-    /// 32-byte secret as a hex string (64 characters)
-    pub secret: String,
     /// Token symbol (e.g., "MID")
     pub token_symbol: String,
     /// Number of decimals for the token
@@ -58,15 +96,10 @@ pub struct CreateFaucetAccountRequest {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ListAccountsRequest {
-    /// 32-byte secret as a hex string (64 characters)
-    pub secret: String,
-}
+pub struct ListAccountsRequest {}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ClientSyncRequest {
-    /// 32-byte secret as a hex string (64 characters)
-    pub secret: String,
     /// Network: "Testnet" or "Localnet"
     pub network: String,
 }
@@ -77,8 +110,6 @@ fn default_true() -> bool {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateOrderRequest {
-    /// 32-byte secret as a hex string (64 characters)
-    pub secret: String,
     /// Network: "Testnet" or "Localnet"
     pub network: String,
     /// Account ID in bech32 format
@@ -92,8 +123,6 @@ pub struct CreateOrderRequest {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CreateRawNoteRequest {
-    /// 32-byte secret as a hex string (64 characters)
-    pub secret: String,
     /// Network: "Testnet" or "Localnet"
     pub network: String,
     /// Account ID in bech32 format
@@ -115,8 +144,6 @@ pub struct CreateRawNoteRequest {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ConsumeNoteRequest {
-    /// 32-byte secret as a hex string (64 characters)
-    pub secret: String,
     /// Network: "Testnet" or "Localnet"
     pub network: String,
     /// Account ID in bech32 format
@@ -127,8 +154,6 @@ pub struct ConsumeNoteRequest {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetAccountStatusRequest {
-    /// 32-byte secret as a hex string (64 characters)
-    pub secret: String,
     /// Network: "Testnet" or "Localnet"
     pub network: String,
     /// Account ID in bech32 format
@@ -308,25 +333,10 @@ impl Mosaic {
     async fn create_client_account(
         &self,
         Parameters(req): Parameters<CreateClientAccountRequest>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex secret
-        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
-            let error_msg = format!("Invalid secret hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse secret");
-            McpError::invalid_params(error_msg, None)
-        })?;
-
-        if secret_bytes.len() != 32 {
-            let error_msg = format!(
-                "Secret must be 32 bytes (64 hex chars), got {} bytes",
-                secret_bytes.len()
-            );
-            tracing::error!(error = %error_msg, "Invalid secret length");
-            return Err(McpError::invalid_params(error_msg, None));
-        }
-
-        let mut secret = [0u8; 32];
-        secret.copy_from_slice(&secret_bytes);
+        // Derive secret from authenticated user
+        let secret = derive_secret_from_context(&context)?;
 
         // Parse network
         let network = match req.network.as_str() {
@@ -371,38 +381,19 @@ impl Mosaic {
             account_id: account_id_bech32,
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "create_client_account response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
     #[tool(description = "Create a new Desk account with market information")]
     async fn create_desk_account(
         &self,
         Parameters(req): Parameters<CreateDeskAccountRequest>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex secret
-        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
-            let error_msg = format!("Invalid secret hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse secret");
-            McpError::invalid_params(error_msg, None)
-        })?;
-
-        if secret_bytes.len() != 32 {
-            let error_msg = format!(
-                "Secret must be 32 bytes (64 hex chars), got {} bytes",
-                secret_bytes.len()
-            );
-            tracing::error!(error = %error_msg, "Invalid secret length");
-            return Err(McpError::invalid_params(error_msg, None));
-        }
-
-        let mut secret = [0u8; 32];
-        secret.copy_from_slice(&secret_bytes);
+        // Derive secret from authenticated user
+        let secret = derive_secret_from_context(&context)?;
 
         // Parse network
         let network = match req.network.as_str() {
@@ -452,38 +443,19 @@ impl Mosaic {
             market: req.market,
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "create_desk_account response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
     #[tool(description = "Create a new Liquidity account")]
     async fn create_liquidity_account(
         &self,
         Parameters(req): Parameters<CreateLiquidityAccountRequest>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex secret
-        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
-            let error_msg = format!("Invalid secret hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse secret");
-            McpError::invalid_params(error_msg, None)
-        })?;
-
-        if secret_bytes.len() != 32 {
-            let error_msg = format!(
-                "Secret must be 32 bytes (64 hex chars), got {} bytes",
-                secret_bytes.len()
-            );
-            tracing::error!(error = %error_msg, "Invalid secret length");
-            return Err(McpError::invalid_params(error_msg, None));
-        }
-
-        let mut secret = [0u8; 32];
-        secret.copy_from_slice(&secret_bytes);
+        // Derive secret from authenticated user
+        let secret = derive_secret_from_context(&context)?;
 
         // Parse network
         let network = match req.network.as_str() {
@@ -528,13 +500,9 @@ impl Mosaic {
             account_id: account_id_bech32,
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "create_liquidity_account response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
     #[tool(
@@ -543,25 +511,10 @@ impl Mosaic {
     async fn create_faucet_account(
         &self,
         Parameters(req): Parameters<CreateFaucetAccountRequest>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex secret
-        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
-            let error_msg = format!("Invalid secret hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse secret");
-            McpError::invalid_params(error_msg, None)
-        })?;
-
-        if secret_bytes.len() != 32 {
-            let error_msg = format!(
-                "Secret must be 32 bytes (64 hex chars), got {} bytes",
-                secret_bytes.len()
-            );
-            tracing::error!(error = %error_msg, "Invalid secret length");
-            return Err(McpError::invalid_params(error_msg, None));
-        }
-
-        let mut secret = [0u8; 32];
-        secret.copy_from_slice(&secret_bytes);
+        // Derive secret from authenticated user
+        let secret = derive_secret_from_context(&context)?;
 
         // Parse network
         let network = match req.network.as_str() {
@@ -619,38 +572,21 @@ impl Mosaic {
             max_supply: req.max_supply,
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "create_faucet_account response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
-    #[tool(description = "List all account IDs (bech32) with their networks for a given secret")]
+    #[tool(
+        description = "List all account IDs (bech32) with their networks for the authenticated user"
+    )]
     async fn list_accounts(
         &self,
-        Parameters(req): Parameters<ListAccountsRequest>,
+        Parameters(_req): Parameters<ListAccountsRequest>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex secret
-        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
-            let error_msg = format!("Invalid secret hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse secret");
-            McpError::invalid_params(error_msg, None)
-        })?;
-
-        if secret_bytes.len() != 32 {
-            let error_msg = format!(
-                "Secret must be 32 bytes (64 hex chars), got {} bytes",
-                secret_bytes.len()
-            );
-            tracing::error!(error = %error_msg, "Invalid secret length");
-            return Err(McpError::invalid_params(error_msg, None));
-        }
-
-        let mut secret = [0u8; 32];
-        secret.copy_from_slice(&secret_bytes);
+        // Derive secret from authenticated user
+        let secret = derive_secret_from_context(&context)?;
 
         // List accounts
         let accounts = {
@@ -682,38 +618,19 @@ impl Mosaic {
             accounts: account_infos,
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "list_accounts response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
-    #[tool(description = "Sync a client's state with the network for a given secret and network")]
+    #[tool(description = "Sync a client's state with the network for the authenticated user")]
     async fn client_sync(
         &self,
         Parameters(req): Parameters<ClientSyncRequest>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex secret
-        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
-            let error_msg = format!("Invalid secret hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse secret");
-            McpError::invalid_params(error_msg, None)
-        })?;
-
-        if secret_bytes.len() != 32 {
-            let error_msg = format!(
-                "Secret must be 32 bytes (64 hex chars), got {} bytes",
-                secret_bytes.len()
-            );
-            tracing::error!(error = %error_msg, "Invalid secret length");
-            return Err(McpError::invalid_params(error_msg, None));
-        }
-
-        let mut secret = [0u8; 32];
-        secret.copy_from_slice(&secret_bytes);
+        // Derive secret from authenticated user
+        let secret = derive_secret_from_context(&context)?;
 
         // Parse network
         let network = match req.network.as_str() {
@@ -766,40 +683,21 @@ impl Mosaic {
             updated_accounts: sync_result.updated_accounts.len() as u32,
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "client_sync response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
     #[tool(
-        description = "Create an order note for a given secret, network, and account. Optionally commit it to the network."
+        description = "Create an order note for the authenticated user's account. Optionally commit it to the network."
     )]
     async fn create_order(
         &self,
         Parameters(req): Parameters<CreateOrderRequest>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex secret
-        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
-            let error_msg = format!("Invalid secret hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse secret");
-            McpError::invalid_params(error_msg, None)
-        })?;
-
-        if secret_bytes.len() != 32 {
-            let error_msg = format!(
-                "Secret must be 32 bytes (64 hex chars), got {} bytes",
-                secret_bytes.len()
-            );
-            tracing::error!(error = %error_msg, "Invalid secret length");
-            return Err(McpError::invalid_params(error_msg, None));
-        }
-
-        let mut secret = [0u8; 32];
-        secret.copy_from_slice(&secret_bytes);
+        // Derive secret from authenticated user
+        let secret = derive_secret_from_context(&context)?;
 
         // Parse network
         let network = match req.network.as_str() {
@@ -851,40 +749,21 @@ impl Mosaic {
             note: mosaic_note,
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "create_order response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
     #[tool(
-        description = "Create a raw note from low-level MASM code and inputs for a given secret, network, and account"
+        description = "Create a raw note from low-level MASM code and inputs for the authenticated user's account"
     )]
     async fn create_raw_note(
         &self,
         Parameters(req): Parameters<CreateRawNoteRequest>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex secret
-        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
-            let error_msg = format!("Invalid secret hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse secret");
-            McpError::invalid_params(error_msg, None)
-        })?;
-
-        if secret_bytes.len() != 32 {
-            let error_msg = format!(
-                "Secret must be 32 bytes (64 hex chars), got {} bytes",
-                secret_bytes.len()
-            );
-            tracing::error!(error = %error_msg, "Invalid secret length");
-            return Err(McpError::invalid_params(error_msg, None));
-        }
-
-        let mut secret = [0u8; 32];
-        secret.copy_from_slice(&secret_bytes);
+        // Derive secret from authenticated user
+        let secret = derive_secret_from_context(&context)?;
 
         // Parse network
         let network = match req.network.as_str() {
@@ -958,40 +837,21 @@ impl Mosaic {
             note: miden_note,
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "create_raw_note response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
     #[tool(
-        description = "Get account status including account type and all assets held by the account"
+        description = "Get account status including account type and all assets held by the authenticated user's account"
     )]
     async fn get_account_status(
         &self,
         Parameters(req): Parameters<GetAccountStatusRequest>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse hex secret
-        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
-            let error_msg = format!("Invalid secret hex string: {}", e);
-            tracing::error!(error = %error_msg, "Failed to parse secret");
-            McpError::invalid_params(error_msg, None)
-        })?;
-
-        if secret_bytes.len() != 32 {
-            let error_msg = format!(
-                "Secret must be 32 bytes (64 hex chars), got {} bytes",
-                secret_bytes.len()
-            );
-            tracing::error!(error = %error_msg, "Invalid secret length");
-            return Err(McpError::invalid_params(error_msg, None));
-        }
-
-        let mut secret = [0u8; 32];
-        secret.copy_from_slice(&secret_bytes);
+        // Derive secret from authenticated user
+        let secret = derive_secret_from_context(&context)?;
 
         // Parse network
         let network = match req.network.as_str() {
@@ -1049,22 +909,18 @@ impl Mosaic {
                 .collect(),
         };
 
-        // Serialize to JSON
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize account status: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize account status");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "get_account_status response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
     #[tool(
-        description = "Consume a note using the specified account. This will execute a transaction to consume the note and add its assets to the account."
+        description = "Consume a note using the authenticated user's account. This will execute a transaction to consume the note and add its assets to the account."
     )]
     async fn consume_note(
         &self,
         Parameters(req): Parameters<ConsumeNoteRequest>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
         tracing::info!(
             tool = "consume_note",
@@ -1076,33 +932,8 @@ impl Mosaic {
             "MCP tools layer: Starting note consumption"
         );
 
-        // Parse hex secret
-        let secret_bytes = hex::decode(&req.secret).map_err(|e| {
-            let error_msg = format!("Invalid secret hex string: {}", e);
-            tracing::error!(
-                error = %error_msg,
-                account_id = %req.account_id,
-                "MCP tools layer: Failed to parse secret"
-            );
-            McpError::invalid_params(error_msg, None)
-        })?;
-
-        if secret_bytes.len() != 32 {
-            let error_msg = format!(
-                "Secret must be 32 bytes (64 hex chars), got {} bytes",
-                secret_bytes.len()
-            );
-            tracing::error!(
-                error = %error_msg,
-                secret_length = secret_bytes.len(),
-                account_id = %req.account_id,
-                "MCP tools layer: Invalid secret length"
-            );
-            return Err(McpError::invalid_params(error_msg, None));
-        }
-
-        let mut secret = [0u8; 32];
-        secret.copy_from_slice(&secret_bytes);
+        // Derive secret from authenticated user
+        let secret = derive_secret_from_context(&context)?;
 
         // Parse network
         let network = match req.network.as_str() {
@@ -1160,26 +991,67 @@ impl Mosaic {
             transaction_id,
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "get_account_status response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
     #[tool(description = "Push a Mosaic note to a desk's note store")]
     async fn desk_push_note(
         &self,
         Parameters(req): Parameters<DeskPushNoteRequest>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        let secret = derive_secret_from_context(&context)?;
+
         // Parse UUID
         let desk_uuid = uuid::Uuid::parse_str(&req.desk_uuid).map_err(|e| {
             let error_msg = format!("Invalid desk UUID: {}", e);
             tracing::error!(error = %error_msg, desk_uuid = %req.desk_uuid, "Failed to parse desk UUID");
             McpError::invalid_params(error_msg, None)
         })?;
+
+        // Fetch desk info to validate ownership
+        let (desk_account_id, desk_network, _market) = {
+            let serve = self.serve.lock().await;
+            serve.get_desk_info(desk_uuid).await.map_err(|e| {
+                let error_msg = format!("Failed to get desk info: {}", e);
+                tracing::error!(
+                    error = %error_msg,
+                    desk_uuid = %desk_uuid,
+                    "Failed to get desk info during desk_push_note"
+                );
+                McpError::internal_error(error_msg, None)
+            })?
+        };
+
+        let accounts = {
+            let serve = self.serve.lock().await;
+            serve.list_accounts(secret).await.map_err(|e| {
+                let error_msg = format!("Failed to list accounts for authorization: {}", e);
+                tracing::error!(error = %error_msg, "Failed to list accounts during desk authorization");
+                McpError::internal_error(error_msg, None)
+            })?
+        };
+
+        let desk_network_label = match desk_network {
+            Network::Testnet => "Testnet",
+            Network::Localnet => "Localnet",
+        };
+
+        let owns_desk = accounts.iter().any(|(account_id, network, _)| {
+            account_id == &desk_account_id && network == desk_network_label
+        });
+
+        if !owns_desk {
+            let error_msg = format!("Authenticated user does not own desk {}", req.desk_uuid);
+            tracing::warn!(
+                desk_uuid = %desk_uuid,
+                account_id = %desk_account_id,
+                "Desk ownership check failed"
+            );
+            return Err(McpError::invalid_request(error_msg, None));
+        }
 
         // Push the note to the desk
         let note_id = {
@@ -1211,13 +1083,9 @@ impl Mosaic {
             note_id,
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "desk_push_note response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
     #[tool(description = "Get desk information including account ID, network, and market data")]
@@ -1264,43 +1132,38 @@ impl Mosaic {
             market,
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "get_desk_info response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
     #[tool(description = "Flush all cached clients and in-memory objects")]
     async fn flush(
         &self,
         Parameters(_req): Parameters<FlushRequest>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        let client_count = {
+        let secret = derive_secret_from_context(&context)?;
+
+        let clients_flushed = {
             let mut serve = self.serve.lock().await;
-            serve.flush()
+            serve.flush_clients_for_secret(secret)
         };
 
         tracing::info!(
             tool = "flush",
-            clients_flushed = client_count,
-            "Flushed cache"
+            clients_flushed,
+            "Flushed client cache for authenticated user"
         );
 
         let response = FlushResponse {
             success: true,
-            clients_flushed: client_count,
+            clients_flushed,
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "flush response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 
     #[tool(description = "Get the current Mosaic version string")]
@@ -1321,13 +1184,9 @@ impl Mosaic {
             version: version.to_string(),
         };
 
-        let response_json = serde_json::to_string_pretty(&response).map_err(|e| {
-            let error_msg = format!("Failed to serialize response: {}", e);
-            tracing::error!(error = %error_msg, "Failed to serialize response");
-            McpError::internal_error(error_msg, None)
-        })?;
+        let content = json_content(&response, "version response")?;
 
-        Ok(CallToolResult::success(vec![Content::text(response_json)]))
+        Ok(CallToolResult::success(vec![content]))
     }
 }
 
@@ -1344,7 +1203,7 @@ impl ServerHandler for Mosaic {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("Mosaic MCP server. Tools: create_account - Create a new Mosaic account with a 32-byte secret (hex string), account type (Client, Desk, or Liquidity), and network (Testnet or Localnet); list_accounts - List all account IDs (bech32) with their networks for a given secret; client_sync - Sync a client's state with the network; create_private_note - Create a private note from an order for a given secret, network, and account.".to_string()),
+            instructions: Some("Mosaic MCP server. Available tools: create_client_account, create_desk_account, create_liquidity_account, create_faucet_account, list_accounts, client_sync, create_order, create_raw_note, get_account_status, consume_note, desk_push_note, get_desk_info, flush, version.".to_string()),
         }
     }
 

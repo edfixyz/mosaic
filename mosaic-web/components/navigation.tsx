@@ -2,8 +2,10 @@
 
 import Link from "next/link"
 import Image from "next/image"
+import { UserProfile } from "@/components/auth/user-profile"
 
 export function Navigation() {
+
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 border-b border-border bg-card">
       <div className="px-6">
@@ -28,6 +30,7 @@ export function Navigation() {
             <Link href="/assets" className="text-sm text-foreground transition-colors hover:text-primary">
               All Assets
             </Link>
+            <UserProfile />
           </div>
         </div>
       </div>
