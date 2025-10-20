@@ -35,17 +35,23 @@ export function OrderBook({ bids, asks, baseAsset, quoteAsset }: OrderBookProps)
 
           {/* Bid Orders */}
           <div className="space-y-1">
-            {bids.map((bid, index) => (
-              <div
-                key={index}
-                className="grid grid-cols-3 gap-4 py-2 hover:bg-secondary/50 rounded transition-colors relative overflow-hidden"
-              >
-                <div className="absolute inset-0 bg-green-500/10" style={{ width: `${Math.random() * 60 + 20}%` }} />
-                <div className="relative text-green-500 font-mono text-sm">{bid.price}</div>
-                <div className="relative text-right text-foreground font-mono text-sm">{bid.amount}</div>
-                <div className="relative text-right text-muted-foreground font-mono text-sm">{bid.total}</div>
+            {bids.length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground">
+                No buy orders available
               </div>
-            ))}
+            ) : (
+              bids.map((bid, index) => (
+                <div
+                  key={index}
+                  className="grid grid-cols-3 gap-4 py-2 hover:bg-secondary/50 rounded transition-colors relative overflow-hidden"
+                >
+                  <div className="absolute inset-0 bg-green-500/10" style={{ width: `${Math.random() * 60 + 20}%` }} />
+                  <div className="relative text-green-500 font-mono text-sm">{bid.price}</div>
+                  <div className="relative text-right text-foreground font-mono text-sm">{bid.amount}</div>
+                  <div className="relative text-right text-muted-foreground font-mono text-sm">{bid.total}</div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </Card>
@@ -69,17 +75,23 @@ export function OrderBook({ bids, asks, baseAsset, quoteAsset }: OrderBookProps)
 
           {/* Ask Orders */}
           <div className="space-y-1">
-            {asks.map((ask, index) => (
-              <div
-                key={index}
-                className="grid grid-cols-3 gap-4 py-2 hover:bg-secondary/50 rounded transition-colors relative overflow-hidden"
-              >
-                <div className="absolute inset-0 bg-red-500/10" style={{ width: `${Math.random() * 60 + 20}%` }} />
-                <div className="relative text-red-500 font-mono text-sm">{ask.price}</div>
-                <div className="relative text-right text-foreground font-mono text-sm">{ask.amount}</div>
-                <div className="relative text-right text-muted-foreground font-mono text-sm">{ask.total}</div>
+            {asks.length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground">
+                No sell orders available
               </div>
-            ))}
+            ) : (
+              asks.map((ask, index) => (
+                <div
+                  key={index}
+                  className="grid grid-cols-3 gap-4 py-2 hover:bg-secondary/50 rounded transition-colors relative overflow-hidden"
+                >
+                  <div className="absolute inset-0 bg-red-500/10" style={{ width: `${Math.random() * 60 + 20}%` }} />
+                  <div className="relative text-red-500 font-mono text-sm">{ask.price}</div>
+                  <div className="relative text-right text-foreground font-mono text-sm">{ask.amount}</div>
+                  <div className="relative text-right text-muted-foreground font-mono text-sm">{ask.total}</div>
+                </div>
+              ))
+            )}
           </div>
         </div>
       </Card>

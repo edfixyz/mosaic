@@ -3,7 +3,7 @@
 // and cannot be statically typed at build time due to WebAssembly constraints
 
 import { bech32m } from 'bech32'
-import type { Word, Account } from '@demox-labs/miden-sdk'
+import { type Word, type Account } from '@demox-labs/miden-sdk'
 
 export const accountIdFromBehc32 = (addr: string): { hex: string, prefix: string } => {
   const { words, prefix } = bech32m.decode(addr)
@@ -58,16 +58,32 @@ export const readAccountStorage = (
 
 type Pair = { base: { symbol: string, faucet: string }, quote: { symbol: string, faucet: string } }
 
+type Quote = { amount: bigint, price: bigint }
+
 type DeskInfo = {
-  pair: Pair
+  pair: Pair,
+  quotes: {
+    sell: Quote[],
+    buy: Quote[]
+  }
 }
 
-export const getDeskInfo = (account: Account): DeskInfo | null => {
-  const base = account.storage().getItem(1)
-  const quote = account.storage().getItem(2)
-  if(!base || !quote) return null
-  const pair = decodePair(base, quote)
-  return { pair }
+export const getDeskInfo = (Word: any, Felt: any, account: Account | null | undefined): DeskInfo | null => {
+  if (!account) return null
+
+  try {
+    const base = account.storage().getItem(1)
+    const quote = account.storage().getItem(2)
+    if(!base || !quote) return null
+    const pair = decodePair(base, quote)
+    const sell = getSellQuotes(Word, Felt, account, 7, 6)
+    if(!sell) return null
+    const buy: Quote[] = []
+    return { pair, quotes: { sell, buy } }
+  } catch (error) {
+    console.error('Error getting desk info:', error)
+    return null
+  }
 }
 
 
@@ -85,7 +101,31 @@ export const getAccountInfo = (account: Account) => {
   }
 }
 
-export const decodePair = (base: Word, quote: Word): { base: { symbol: string, faucet: string }, quote: { symbol: string, faucet: string } } => {
+const getSellQuotes = (Word: any, Felt: any, account: Account, startSlot: number, bookSlot: number): { amount: bigint, price: bigint }[] | null => {
+  const quotes = []
+  let id: bigint | undefined = account.storage().getItem(startSlot)?.toU64s()[0]
+  if(!id) return null
+
+  while(id !== 0n) {
+    console.log('IDD', id)
+    const z0 = new Felt(BigInt(0))
+    const z1 = new Felt(BigInt(0))
+    const z2 = new Felt(BigInt(0))
+    const entry = account.storage().getMapItem(bookSlot, Word.newFromFelts([new Felt(id), z0, z1, z2]))
+    if(entry) {
+      const [previous, next, price, amount] = entry?.toU64s().reverse()
+      console.log('LLL', previous, next, price, amount)
+      quotes.push({ price, amount })
+      id = next
+    } else {
+      console.log('Algorithm error: entry not found')
+      return null
+    }
+  }
+  return quotes
+}
+
+const decodePair = (base: Word, quote: Word): { base: { symbol: string, faucet: string }, quote: { symbol: string, faucet: string } } => {
   const decodeSymbol = (word: Word): { symbol: string, faucet: string } => {
     // Convert Word to array of Felts
     const felts = word.toFelts()
@@ -128,7 +168,7 @@ export const decodePair = (base: Word, quote: Word): { base: { symbol: string, f
 
     // Convert to bech32m format
     const words = bech32m.toWords(faucetBytes)
-    const faucet = bech32m.encode('smaf', words) // Using 'smaf' as prefix, adjust if needed
+    const faucet = bech32m.encode('mtst', words)
 
     return { symbol, faucet }
   }

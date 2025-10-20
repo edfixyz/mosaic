@@ -24,6 +24,8 @@ export function Sidebar() {
   const [markets, setMarkets] = useState<Market[]>([])
   const [open, setOpen] = useState(false)
   const [marketId, setMarketId] = useState("")
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
+  const [marketToDelete, setMarketToDelete] = useState<string | null>(null)
 
   // Load markets from localStorage on mount and listen for changes
   useEffect(() => {
@@ -64,19 +66,27 @@ export function Sidebar() {
     e.preventDefault()
     e.stopPropagation()
 
-    if (confirm("Remove this market from your list?")) {
-      // Check if we're currently on this market's page
-      const marketPath = `/market/${marketId}`
-      const isCurrentPage = pathname === marketPath
+    setMarketToDelete(marketId)
+    setDeleteDialogOpen(true)
+  }
 
-      marketStorage.removeMarket(marketId)
-      setMarkets(marketStorage.getMarkets())
+  const confirmRemoveMarket = () => {
+    if (!marketToDelete) return
 
-      // Navigate to home if we're on the removed market's page
-      if (isCurrentPage) {
-        window.location.href = '/'
-      }
+    // Check if we're currently on this market's page
+    const marketPath = `/market/${marketToDelete}`
+    const isCurrentPage = pathname === marketPath
+
+    marketStorage.removeMarket(marketToDelete)
+    setMarkets(marketStorage.getMarkets())
+
+    // Navigate to home if we're on the removed market's page
+    if (isCurrentPage) {
+      window.location.href = '/'
     }
+
+    setDeleteDialogOpen(false)
+    setMarketToDelete(null)
   }
 
   return (
@@ -105,7 +115,12 @@ export function Sidebar() {
                       <span title="Unverified market">
                         <AlertTriangle className="h-3 w-3 text-red-500 shrink-0" />
                       </span>
-                      <span className="flex-1 truncate">{market.pair}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="truncate">{market.pair}</div>
+                        <div className="text-[10px] text-muted-foreground font-mono truncate" title={market.marketId}>
+                          {market.marketId.slice(0, 12)}...
+                        </div>
+                      </div>
                     </Link>
                     <button
                       onClick={(e) => handleRemoveMarket(e, market.marketId)}
@@ -164,6 +179,33 @@ export function Sidebar() {
             </DialogContent>
           </Dialog>
         </div>
+
+        {/* Delete Confirmation Dialog */}
+        <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+          <DialogContent className="bg-card border-border">
+            <DialogHeader>
+              <DialogTitle className="text-destructive">Remove Market</DialogTitle>
+              <DialogDescription className="text-muted-foreground">
+                Are you sure you want to remove this market from your list?
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex gap-3 justify-end mt-4">
+              <Button
+                variant="outline"
+                onClick={() => setDeleteDialogOpen(false)}
+                className="border-border"
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={confirmRemoveMarket}
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              >
+                Remove
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
     </aside>
   )
