@@ -1,7 +1,8 @@
 use axum::{
     Router,
     extract::{Json, Path, State as AxumState},
-    http::StatusCode,
+    http::{HeaderName, HeaderValue, StatusCode},
+    middleware,
     response::IntoResponse,
     routing::{get, post},
 };
@@ -17,9 +18,49 @@ use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tracing::warn;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 mod helper;
+mod oauth;
+
+fn allowed_origins() -> AllowOrigin {
+    match std::env::var("MOSAIC_CORS_ALLOWED_ORIGINS") {
+        Ok(value) => {
+            let origins: Vec<_> = value
+                .split(',')
+                .map(str::trim)
+                .filter(|origin| !origin.is_empty())
+                .filter_map(|origin| match HeaderValue::from_str(origin) {
+                    Ok(value) => Some(value),
+                    Err(err) => {
+                        warn!(
+                            "Ignoring invalid origin '{}' in MOSAIC_CORS_ALLOWED_ORIGINS: {}",
+                            origin, err
+                        );
+                        None
+                    }
+                })
+                .collect();
+
+            if origins.is_empty() {
+                AllowOrigin::any()
+            } else {
+                AllowOrigin::list(origins)
+            }
+        }
+        Err(_) => AllowOrigin::any(),
+    }
+}
+
+fn build_cors_layer() -> CorsLayer {
+    CorsLayer::new()
+        .allow_origin(allowed_origins())
+        .allow_methods(Any)
+        .allow_headers(Any)
+        .expose_headers([HeaderName::from_static("mcp-session-id")])
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "mosaic-server")]
@@ -44,6 +85,10 @@ struct Args {
     /// Storage path for accounts
     #[arg(long, default_value = "./mosaic_store")]
     storage_path: String,
+
+    /// Disable OAuth authentication (for testing)
+    #[arg(long, default_value_t = false)]
+    no_auth: bool,
 }
 
 // Request/Response types for HTTP API
@@ -138,23 +183,62 @@ async fn desk_push_note_handler(
     }
 }
 
-async fn run_mcp_server(port: u16, storage_path: String) -> Result<(), Box<dyn std::error::Error>> {
+async fn run_mcp_server(
+    port: u16,
+    storage_path: String,
+    no_auth: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     let bind_address = format!("127.0.0.1:{}", port);
     tracing::info!("Starting MCP server on {}", bind_address);
     tracing::info!("Using storage path: {}", storage_path);
+
+    if no_auth {
+        tracing::warn!("OAuth DISABLED - server is running without authentication!");
+    } else {
+        tracing::info!("OAuth enabled with Auth0 at auth.mosaic.edfi.xyz");
+    }
 
     // Create shared Serve instance
     let mut serve = mosaic_serve::Serve::new(&storage_path)?;
     serve.init_desks().await?;
     let serve_state = Arc::new(Mutex::new(serve));
 
-    let service = StreamableHttpService::new(
+    // Create MCP service
+    let mcp_service = StreamableHttpService::new(
         move || Ok(Mosaic::with_shared_serve(serve_state.clone())),
         LocalSessionManager::default().into(),
         Default::default(),
     );
 
-    let router = Router::new().nest_service("/mcp", service);
+    // Create CORS layer for all endpoints (MCP + OAuth)
+    let cors = build_cors_layer();
+
+    // Conditionally protect MCP endpoints with OAuth middleware + CORS
+    let mcp_router = if no_auth {
+        Router::new()
+            .nest_service("/mcp", mcp_service)
+            .layer(cors.clone())
+    } else {
+        Router::new()
+            .nest_service("/mcp", mcp_service)
+            .layer(middleware::from_fn(oauth::oauth_middleware))
+            .layer(cors.clone())
+    };
+
+    // OAuth endpoints (publicly accessible)
+    let bind_addr_for_metadata = bind_address.clone();
+    let oauth_routes = Router::new()
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(move || oauth::oauth_authorization_server_metadata(bind_addr_for_metadata.clone())),
+        )
+        .route("/oauth/register", post(oauth::oauth_register))
+        .route("/oauth/token", post(oauth::oauth_token))
+        .layer(cors);
+
+    // Combine routes
+    let router = Router::new().merge(mcp_router).merge(oauth_routes);
+
     let tcp_listener = tokio::net::TcpListener::bind(&bind_address).await?;
 
     axum::serve(tcp_listener, router)
@@ -198,10 +282,17 @@ async fn run_rest_server(
 async fn run_combined_server_same_port(
     port: u16,
     storage_path: String,
+    no_auth: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let addr = format!("127.0.0.1:{}", port);
     tracing::info!("Starting combined MCP and REST API server on {}", addr);
     tracing::info!("Using storage path: {}", storage_path);
+
+    if no_auth {
+        tracing::warn!("OAuth DISABLED - server is running without authentication!");
+    } else {
+        tracing::info!("OAuth enabled with Auth0 at auth.mosaic.edfi.xyz");
+    }
 
     // Create shared Serve instance
     let mut serve = mosaic_serve::Serve::new(&storage_path)?;
@@ -218,15 +309,42 @@ async fn run_combined_server_same_port(
         )
     };
 
+    // Create CORS layer for all endpoints (MCP + OAuth)
+    let cors = build_cors_layer();
+
+    // Conditionally protect MCP endpoints with OAuth middleware + CORS
+    let mcp_router = if no_auth {
+        Router::new()
+            .nest_service("/mcp", mcp_service)
+            .layer(cors.clone())
+    } else {
+        Router::new()
+            .nest_service("/mcp", mcp_service)
+            .layer(middleware::from_fn(oauth::oauth_middleware))
+            .layer(cors.clone())
+    };
+
+    // OAuth endpoints (publicly accessible)
+    let bind_addr_for_metadata = addr.clone();
+    let oauth_routes = Router::new()
+        .route(
+            "/.well-known/oauth-authorization-server",
+            get(move || oauth::oauth_authorization_server_metadata(bind_addr_for_metadata.clone())),
+        )
+        .route("/oauth/register", post(oauth::oauth_register))
+        .route("/oauth/token", post(oauth::oauth_token))
+        .layer(cors);
+
     // Create HTTP REST API routes with shared state
     let http_routes = Router::new()
         .route("/desk/{uuid}", get(get_desk_info_handler))
         .route("/desk/{uuid}/note", post(desk_push_note_handler))
         .with_state(serve_state);
 
-    // Combine both into a single router
+    // Combine all routes into a single router
     let combined_router = Router::new()
-        .nest_service("/mcp", mcp_service)
+        .merge(mcp_router)
+        .merge(oauth_routes)
         .merge(http_routes);
 
     let tcp_listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -244,10 +362,17 @@ async fn run_both_servers_different_ports(
     mcp_port: u16,
     rest_port: u16,
     storage_path: String,
+    no_auth: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Starting MCP server on 127.0.0.1:{}", mcp_port);
     tracing::info!("Starting REST API server on 0.0.0.0:{}", rest_port);
     tracing::info!("Using storage path: {}", storage_path);
+
+    if no_auth {
+        tracing::warn!("OAuth DISABLED - MCP server is running without authentication!");
+    } else {
+        tracing::info!("OAuth enabled with Auth0 at auth.mosaic.edfi.xyz");
+    }
 
     // Create shared Serve instance for both servers
     let mut serve = mosaic_serve::Serve::new(&storage_path)?;
@@ -270,12 +395,45 @@ async fn run_both_servers_different_ports(
         let serve_clone = serve_state.clone();
         tokio::spawn(async move {
             let bind_address = format!("127.0.0.1:{}", mcp_port);
-            let service = StreamableHttpService::new(
+
+            // Create MCP service
+            let mcp_service = StreamableHttpService::new(
                 move || Ok(Mosaic::with_shared_serve(serve_clone.clone())),
                 LocalSessionManager::default().into(),
                 Default::default(),
             );
-            let router = Router::new().nest_service("/mcp", service);
+
+            // Create CORS layer for all endpoints (MCP + OAuth)
+            let cors = build_cors_layer();
+
+            // Conditionally protect MCP endpoints with OAuth middleware + CORS
+            let mcp_router = if no_auth {
+                Router::new()
+                    .nest_service("/mcp", mcp_service)
+                    .layer(cors.clone())
+            } else {
+                Router::new()
+                    .nest_service("/mcp", mcp_service)
+                    .layer(middleware::from_fn(oauth::oauth_middleware))
+                    .layer(cors.clone())
+            };
+
+            // OAuth endpoints (publicly accessible)
+            let bind_addr_for_metadata = bind_address.clone();
+            let oauth_routes = Router::new()
+                .route(
+                    "/.well-known/oauth-authorization-server",
+                    get(move || {
+                        oauth::oauth_authorization_server_metadata(bind_addr_for_metadata.clone())
+                    }),
+                )
+                .route("/oauth/register", post(oauth::oauth_register))
+                .route("/oauth/token", post(oauth::oauth_token))
+                .layer(cors);
+
+            // Combine routes
+            let router = Router::new().merge(mcp_router).merge(oauth_routes);
+
             let tcp_listener = tokio::net::TcpListener::bind(&bind_address).await?;
 
             axum::serve(tcp_listener, router)
@@ -325,6 +483,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let args = Args::parse();
 
+    // Validate OAuth environment variables if OAuth is enabled
+    if args.mcp
+        && !args.no_auth
+        && let Err(e) = oauth::validate_auth_env_vars()
+    {
+        eprintln!("\n❌ OAuth Configuration Error:");
+        eprintln!("{}", e);
+        eprintln!("\nRequired environment variables:");
+        eprintln!("  - MOSAIC_AUTH_DOMAIN (your Auth0 domain)");
+        eprintln!("  - MOSAIC_MCP_CLIENT_ID (from 'Mosaic Dev' app in Auth0)");
+        eprintln!("  - MOSAIC_MCP_CLIENT_SECRET (from 'Mosaic Dev' app in Auth0)");
+        eprintln!("\nPlease set these environment variables or run with --no-auth for testing.\n");
+        std::process::exit(1);
+    }
+
     // Validate that at least one server is enabled
     if !args.mcp && !args.rest {
         eprintln!("Error: At least one server must be enabled. Use --mcp or --rest or both.");
@@ -356,7 +529,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     match (args.mcp, args.rest) {
         (true, false) => {
             // MCP server only
-            run_mcp_server(args.mcp_port, args.storage_path).await?;
+            run_mcp_server(args.mcp_port, args.storage_path, args.no_auth).await?;
         }
         (false, true) => {
             // REST API server only
@@ -366,11 +539,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Both servers
             if args.mcp_port == args.rest_port {
                 // Same port: use combined router for efficiency
-                run_combined_server_same_port(args.mcp_port, args.storage_path).await?;
+                run_combined_server_same_port(args.mcp_port, args.storage_path, args.no_auth)
+                    .await?;
             } else {
                 // Different ports: run two separate servers concurrently
-                run_both_servers_different_ports(args.mcp_port, args.rest_port, args.storage_path)
-                    .await?;
+                run_both_servers_different_ports(
+                    args.mcp_port,
+                    args.rest_port,
+                    args.storage_path,
+                    args.no_auth,
+                )
+                .await?;
             }
         }
         (false, false) => {

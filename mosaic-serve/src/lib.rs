@@ -666,6 +666,14 @@ impl Serve {
         self.clients.clear();
         count
     }
+
+    /// Flush cached clients for a specific user secret
+    pub fn flush_clients_for_secret(&mut self, secret: [u8; 32]) -> usize {
+        let before = self.clients.len();
+        self.clients
+            .retain(|(entry_secret, _), _| entry_secret != &secret);
+        before - self.clients.len()
+    }
 }
 
 #[derive(Debug)]

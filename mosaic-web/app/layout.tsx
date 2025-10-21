@@ -7,6 +7,7 @@ import { Analytics } from "@vercel/analytics/next"
 import "./globals.css"
 import { Navigation } from "@/components/navigation"
 import { Sidebar } from "@/components/sidebar"
+import { MobileWarning } from "@/components/mobile-warning"
 import { Suspense } from "react"
 
 const playfair = Playfair_Display({
@@ -35,6 +36,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`font-sans ${GeistSans.variable} ${GeistMono.variable} ${playfair.variable} ${dmMono.variable}`}>
+        <MobileWarning />
         <Suspense fallback={<div>Loading...</div>}>
           <Navigation />
           <Sidebar />
