@@ -1,7 +1,12 @@
-import type { NextConfig } from "next";
+import path from 'path'
+import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
-  turbopack: {},
+  turbopack: {
+    resolveAlias: {
+      wbg: path.resolve(__dirname, "empty.js"),
+    },
+  },
   webpack: (config, { isServer }) => {
     // Enable WebAssembly support
     config.experiments = {
