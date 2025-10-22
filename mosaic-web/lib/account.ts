@@ -88,18 +88,18 @@ export const getDeskInfo = (Word: any, Felt: any, account: Account | null | unde
 
 
 // Helper to get account info
-export const getAccountInfo = (account: Account) => {
-  return {
-    id: account.id().toString(),
-    nonce: account.nonce().toString(),
-    vault: account.vault().fungibleAssets(),
-    commitment: account.commitment().toHex(),
-    isPublic: account.isPublic(),
-    isUpdatable: account.isUpdatable(),
-    isFaucet: account.isFaucet(),
-    isRegularAccount: account.isRegularAccount(),
-  }
-}
+// export const getAccountInfo = (account: Account) => {
+//   return {
+//     id: account.id().toString(),
+//     nonce: account.nonce().toString(),
+//     vault: account.vault().fungibleAssets(),
+//     commitment: account.commitment().toHex(),
+//     isPublic: account.isPublic(),
+//     isUpdatable: account.isUpdatable(),
+//     isFaucet: account.isFaucet(),
+//     isRegularAccount: account.isRegularAccount(),
+//   }
+// }
 
 const getSellQuotes = (Word: any, Felt: any, account: Account, startSlot: number, bookSlot: number): { amount: bigint, price: bigint }[] | null => {
   const quotes = []

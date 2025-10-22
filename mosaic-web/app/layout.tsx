@@ -36,11 +36,16 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`font-sans ${GeistSans.variable} ${GeistMono.variable} ${playfair.variable} ${dmMono.variable}`}>
+        <div className="fixed top-0 left-0 right-0 border border-red-600 text-red-600 text-sm py-2 z-[60] bg-card overflow-hidden">
+          <div className="inline-block whitespace-nowrap animate-marquee">
+            This product is in alpha • Expect bugs and dragons • Follow @edfixy
+          </div>
+        </div>
         <MobileWarning />
         <Suspense fallback={<div>Loading...</div>}>
           <Navigation />
           <Sidebar />
-          <main className="ml-64 mt-16">{children}</main>
+          <main className="ml-64 mt-[92px]">{children}</main>
         </Suspense>
         <Analytics />
       </body>

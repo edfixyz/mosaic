@@ -32,14 +32,17 @@ fn allowed_origins() -> AllowOrigin {
                 .split(',')
                 .map(str::trim)
                 .filter(|origin| !origin.is_empty())
-                .filter_map(|origin| match HeaderValue::from_str(origin) {
-                    Ok(value) => Some(value),
-                    Err(err) => {
-                        warn!(
-                            "Ignoring invalid origin '{}' in MOSAIC_CORS_ALLOWED_ORIGINS: {}",
-                            origin, err
-                        );
-                        None
+                .filter_map(|origin| {
+                    let normalized = origin.trim_end_matches('/');
+                    match HeaderValue::from_str(normalized) {
+                        Ok(value) => Some(value),
+                        Err(err) => {
+                            warn!(
+                                "Ignoring invalid origin '{}' in MOSAIC_CORS_ALLOWED_ORIGINS: {}",
+                                normalized, err
+                            );
+                            None
+                        }
                     }
                 })
                 .collect();
@@ -103,6 +106,16 @@ struct DeskInfoResponse {
     account_id: String,
     network: String,
     market: mosaic_fi::Market,
+}
+
+#[derive(Debug, Serialize)]
+struct AssetSummary {
+    account: String,
+    symbol: String,
+    #[serde(rename = "maxSupply")]
+    max_supply: String,
+    decimals: u8,
+    verified: bool,
 }
 
 // GET /desk/{uuid}
@@ -183,6 +196,18 @@ async fn desk_push_note_handler(
     }
 }
 
+async fn list_assets_handler() -> impl IntoResponse {
+    let assets = vec![AssetSummary {
+        account: "mtst1qrkc5sp34wkncgr9tp9ghjsjv9cqq0u8da0".to_string(),
+        symbol: "BTC".to_string(),
+        max_supply: "2100000000000000".to_string(),
+        decimals: 8,
+        verified: true,
+    }];
+
+    (StatusCode::OK, Json(assets))
+}
+
 async fn run_mcp_server(
     port: u16,
     storage_path: String,
@@ -234,10 +259,18 @@ async fn run_mcp_server(
         )
         .route("/oauth/register", post(oauth::oauth_register))
         .route("/oauth/token", post(oauth::oauth_token))
+        .layer(cors.clone());
+
+    // Public unauthenticated routes
+    let public_routes = Router::new()
+        .route("/assets", get(list_assets_handler))
         .layer(cors);
 
     // Combine routes
-    let router = Router::new().merge(mcp_router).merge(oauth_routes);
+    let router = Router::new()
+        .merge(mcp_router)
+        .merge(oauth_routes)
+        .merge(public_routes);
 
     let tcp_listener = tokio::net::TcpListener::bind(&bind_address).await?;
 
@@ -266,6 +299,7 @@ async fn run_rest_server(
     let app = Router::new()
         .route("/desk/{uuid}", get(get_desk_info_handler))
         .route("/desk/{uuid}/note", post(desk_push_note_handler))
+        .route("/assets", get(list_assets_handler))
         .with_state(serve_state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
@@ -339,13 +373,19 @@ async fn run_combined_server_same_port(
     let http_routes = Router::new()
         .route("/desk/{uuid}", get(get_desk_info_handler))
         .route("/desk/{uuid}/note", post(desk_push_note_handler))
-        .with_state(serve_state);
+        .with_state(serve_state.clone());
+
+    // Public routes (no auth required)
+    let public_routes = Router::new()
+        .route("/assets", get(list_assets_handler))
+        .layer(build_cors_layer());
 
     // Combine all routes into a single router
     let combined_router = Router::new()
         .merge(mcp_router)
         .merge(oauth_routes)
-        .merge(http_routes);
+        .merge(http_routes)
+        .merge(public_routes);
 
     let tcp_listener = tokio::net::TcpListener::bind(&addr).await?;
 
@@ -429,10 +469,17 @@ async fn run_both_servers_different_ports(
                 )
                 .route("/oauth/register", post(oauth::oauth_register))
                 .route("/oauth/token", post(oauth::oauth_token))
+                .layer(cors.clone());
+
+            let public_routes = Router::new()
+                .route("/assets", get(list_assets_handler))
                 .layer(cors);
 
             // Combine routes
-            let router = Router::new().merge(mcp_router).merge(oauth_routes);
+            let router = Router::new()
+                .merge(mcp_router)
+                .merge(oauth_routes)
+                .merge(public_routes);
 
             let tcp_listener = tokio::net::TcpListener::bind(&bind_address).await?;
 
@@ -451,6 +498,7 @@ async fn run_both_servers_different_ports(
             let app = Router::new()
                 .route("/desk/{uuid}", get(get_desk_info_handler))
                 .route("/desk/{uuid}/note", post(desk_push_note_handler))
+                .route("/assets", get(list_assets_handler))
                 .with_state(serve_clone);
             let listener = tokio::net::TcpListener::bind(addr).await?;
 
