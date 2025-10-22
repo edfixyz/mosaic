@@ -90,7 +90,7 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="fixed left-0 top-16 h-[calc(100vh-4rem)] w-64 border-r border-border bg-card overflow-y-auto">
+    <aside className="fixed left-0 top-[92px] h-[calc(100vh-92px)] w-64 border-r border-border bg-card overflow-y-auto">
       <div className="p-6 flex flex-col h-full" style={{ fontFamily: "var(--font-dm-mono)" }}>
         {/* Markets Section */}
         <div className="flex-1">

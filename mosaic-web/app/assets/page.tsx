@@ -86,7 +86,7 @@ export default async function AssetsPage() {
                     )}
                   </p>
                   <p className="text-sm text-muted-foreground">
-                    Max Supply: {asset.maxSupply} (decimals: {asset.decimals})
+                    Max Supply: {Math.floor(Number(asset.maxSupply) / Math.pow(10, asset.decimals)).toLocaleString('en-US')} (decimals: {asset.decimals})
                   </p>
                 </div>
               </div>

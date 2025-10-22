@@ -7,7 +7,7 @@ import { UserProfile } from "@/components/auth/user-profile"
 export function Navigation() {
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 border-b border-border bg-card">
+    <nav className="fixed top-7 left-0 right-0 z-50 border-b border-border bg-card">
       <div className="px-6">
         <div className="flex h-16 items-center justify-between">
           <Link href="/" className="flex items-center gap-3">
