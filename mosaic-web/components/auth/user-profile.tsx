@@ -4,7 +4,8 @@ import { useEffect, useState } from 'react';
 import { LoginButton } from './login-button';
 import { LogoutButton } from './logout-button';
 import { Button } from '@/components/ui/button';
-import { callMCPTool, ensureMCPConnection, resetMCPSession } from '@/lib/mcp-client';
+import { ensureMCPConnection, resetMCPSession } from '@/lib/mcp-client';
+import { callMcpTool } from '@/lib/mcp-tool';
 
 interface User {
   email?: string;
@@ -69,7 +70,7 @@ export function UserProfile() {
         return;
       }
 
-      const result = await callMCPTool('list_accounts', {}, tokenData.accessToken);
+      const result = await callMcpTool('list_accounts', {}, tokenData.accessToken);
 
       console.log('📊 Accounts:', result);
       console.table(result);

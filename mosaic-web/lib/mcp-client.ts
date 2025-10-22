@@ -6,6 +6,18 @@ type ManagedClient = {
   transport: StreamableHTTPClientTransport
 }
 
+export interface RawToolContent {
+  type: string
+  text?: string
+}
+
+export interface RawCallToolResult {
+  content?: RawToolContent[]
+  structuredContent?: unknown
+  isError?: boolean
+  error?: unknown
+}
+
 const MCP_SERVER_URL =
   process.env.NEXT_PUBLIC_MCP_SERVER_URL ?? 'http://localhost:8000/mcp'
 
@@ -59,10 +71,10 @@ export async function callMCPTool(
   toolName: string,
   args: Record<string, unknown> = {},
   accessToken: string
-): Promise<unknown> {
+): Promise<RawCallToolResult> {
   const client = await getClient(accessToken)
   const result = await client.callTool({ name: toolName, arguments: args })
-  return result
+  return result as RawCallToolResult
 }
 
 export async function ensureMCPConnection(accessToken: string): Promise<void> {
