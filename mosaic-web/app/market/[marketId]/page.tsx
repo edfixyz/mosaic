@@ -1,14 +1,14 @@
 'use client'
 
-import { OrderBook } from "@/components/order-book"
-import { Card } from "@/components/ui/card"
-import { Badge } from "@/components/ui/badge"
-import { TrendingUp, TrendingDown, Loader2 } from "lucide-react"
-import { use, useEffect, useState } from "react"
-import { getOrImportAccount, getDeskInfo } from "@/lib/account"
-import { marketStorage } from "@/lib/marketStorage"
+import { OrderBook } from '@/components/order-book'
+import { Card } from '@/components/ui/card'
+import { Badge } from '@/components/ui/badge'
+import { TrendingUp, TrendingDown, Loader2 } from 'lucide-react'
+import { use, useEffect, useState } from 'react'
+import { getOrImportAccount, getDeskInfo } from '@/lib/account'
+import { marketStorage } from '@/lib/marketStorage'
 
-const defaultMarket = { price: 1000, change: "+0.00%", positive: true, volume: "$0" }
+const defaultMarket = { price: 1000, change: '+0.00%', positive: true, volume: '$0' }
 
 type OrderBookEntry = {
   price: string
