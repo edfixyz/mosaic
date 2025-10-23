@@ -80,29 +80,29 @@ export default async function AssetsPage() {
             )}
           >
             <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
-          <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
-            <Coins className="h-6 w-6 text-primary" />
-          </div>
-          <div>
-            <div className="flex items-center gap-3 mb-1">
-              <h3 className="text-xl font-semibold text-foreground">{asset.symbol}</h3>
-              <Badge variant={asset.verified ? 'outline' : 'destructive'} className="text-xs">
-                {asset.verified ? 'Verified' : 'Unverified'}
-              </Badge>
-              {asset.owner && (
-                <Badge variant="outline" className="text-xs">
+              <div className="flex items-center gap-4">
+                <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
+                  <Coins className="h-6 w-6 text-primary" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-3 mb-1">
+                    <h3 className="text-xl font-semibold text-foreground">{asset.symbol}</h3>
+                    <Badge variant={asset.verified ? 'outline' : 'destructive'} className="text-xs">
+                      {asset.verified ? 'Verified' : 'Unverified'}
+                    </Badge>
+                    {asset.owner && (
+                      <Badge variant="outline" className="text-xs">
                   Owner
-                </Badge>
-              )}
-              {asset.account.startsWith('mtst') && (
-                <Badge variant="outline" className="text-xs">
+                      </Badge>
+                    )}
+                    {asset.account.startsWith('mtst') && (
+                      <Badge variant="outline" className="text-xs">
                   Testnet
-                </Badge>
-              )}
-              <Badge variant="outline" className="text-xs">
+                      </Badge>
+                    )}
+                    <Badge variant="outline" className="text-xs">
                 Public
-              </Badge>
+                    </Badge>
                   </div>
                   <p className="text-sm text-muted-foreground">
                     Account:{' '}
