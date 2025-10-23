@@ -76,9 +76,9 @@ export const getDeskInfo = (Word: any, Felt: any, account: Account | null | unde
     const quote = account.storage().getItem(2)
     if(!base || !quote) return null
     const pair = decodePair(base, quote)
-    const sell = getSellQuotes(Word, Felt, account, 7, 6)
-    if(!sell) return null
-    const buy: Quote[] = []
+    const sell = getSQuotes(Word, Felt, account, 7, 6)
+    const buy = getSQuotes(Word, Felt, account, 12, 11)
+    if(!sell || !buy) return null
     return { pair, quotes: { sell, buy } }
   } catch (error) {
     console.error('Error getting desk info:', error)
@@ -87,34 +87,18 @@ export const getDeskInfo = (Word: any, Felt: any, account: Account | null | unde
 }
 
 
-// Helper to get account info
-// export const getAccountInfo = (account: Account) => {
-//   return {
-//     id: account.id().toString(),
-//     nonce: account.nonce().toString(),
-//     vault: account.vault().fungibleAssets(),
-//     commitment: account.commitment().toHex(),
-//     isPublic: account.isPublic(),
-//     isUpdatable: account.isUpdatable(),
-//     isFaucet: account.isFaucet(),
-//     isRegularAccount: account.isRegularAccount(),
-//   }
-// }
-
-const getSellQuotes = (Word: any, Felt: any, account: Account, startSlot: number, bookSlot: number): { amount: bigint, price: bigint }[] | null => {
+const getSQuotes = (Word: any, Felt: any, account: Account, startSlot: number, bookSlot: number): { amount: bigint, price: bigint }[] | null => {
   const quotes = []
   let id: bigint | undefined = account.storage().getItem(startSlot)?.toU64s()[0]
   if(!id) return null
 
   while(id !== 0n) {
-    console.log('IDD', id)
     const z0 = new Felt(BigInt(0))
     const z1 = new Felt(BigInt(0))
     const z2 = new Felt(BigInt(0))
     const entry = account.storage().getMapItem(bookSlot, Word.newFromFelts([new Felt(id), z0, z1, z2]))
     if(entry) {
-      const [previous, next, price, amount] = entry?.toU64s().reverse()
-      console.log('LLL', previous, next, price, amount)
+      const [, next, price, amount] = entry?.toU64s().reverse()
       quotes.push({ price, amount })
       id = next
     } else {
