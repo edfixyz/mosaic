@@ -23,24 +23,31 @@ const MCP_SERVER_URL =
 
 const clientCache = new Map<string, ManagedClient>()
 
-function createTransport(accessToken: string) {
+function createTransport(accessToken?: string) {
+  const headers: Record<string, string> = {
+    Accept: 'application/json, text/event-stream',
+  }
+
+  if (accessToken) {
+    headers.Authorization = `Bearer ${accessToken}`
+  }
+
   return new StreamableHTTPClientTransport(new URL(MCP_SERVER_URL), {
     requestInit: {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        Accept: 'application/json, text/event-stream',
-      },
+      headers,
     },
   })
 }
 
-async function getClient(accessToken: string): Promise<Client> {
-  const cached = clientCache.get(accessToken)
+async function getClient(accessToken?: string | null): Promise<Client> {
+  const cacheKey = accessToken ?? '__public__'
+
+  const cached = clientCache.get(cacheKey)
   if (cached) {
     return cached.client
   }
 
-  const transport = createTransport(accessToken)
+  const transport = createTransport(accessToken ?? undefined)
   const client = new Client(
     { name: 'mosaic-web', version: '1.0.0' },
     {
@@ -60,17 +67,17 @@ async function getClient(accessToken: string): Promise<Client> {
   }
 
   client.onclose = () => {
-    clientCache.delete(accessToken)
+    clientCache.delete(cacheKey)
   }
 
-  clientCache.set(accessToken, { client, transport })
+  clientCache.set(cacheKey, { client, transport })
   return client
 }
 
 export async function callMCPTool(
   toolName: string,
   args: Record<string, unknown> = {},
-  accessToken: string
+  accessToken?: string | null
 ): Promise<RawCallToolResult> {
   const client = await getClient(accessToken)
   const result = await client.callTool({ name: toolName, arguments: args })

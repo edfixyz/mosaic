@@ -8,6 +8,10 @@ use uuid::Uuid;
 
 pub mod desk_store;
 use desk_store::DeskStore;
+pub mod asset_store;
+use asset_store::{
+    AssetStore, NewAsset as RegistryAsset, StoredAsset as RegistryStoredAsset, default_assets,
+};
 
 /// Desk metadata cached in memory
 pub struct DeskMetadata {
@@ -20,6 +24,7 @@ pub struct DeskMetadata {
 pub struct Serve {
     store_path: PathBuf,
     desk_store_path: PathBuf,
+    asset_store_path: PathBuf,
     clients: HashMap<([u8; 32], Network), ClientHandle>,
     desks: HashMap<Uuid, DeskMetadata>,
 }
@@ -35,9 +40,20 @@ impl Serve {
         // Global desk store at the project root (parent of store_path)
         let desk_store_path = store_path.join("mosaic_top.sqlite3");
 
+        let asset_store_path = store_path.join("mosaic_assets.sqlite3");
+        let asset_store = AssetStore::open(&asset_store_path).map_err(|err| {
+            ServeError::InvalidPath(format!("Failed to open asset store: {}", err))
+        })?;
+        asset_store
+            .ensure_default_asset("__default__")
+            .map_err(|err| {
+                ServeError::InvalidPath(format!("Failed to seed default asset: {}", err))
+            })?;
+
         Ok(Serve {
             store_path,
             desk_store_path,
+            asset_store_path,
             clients: HashMap::new(),
             desks: HashMap::new(),
         })
@@ -67,8 +83,9 @@ impl Serve {
                             match store.list_accounts() {
                                 Ok(accounts) => {
                                     // Find the Desk account
-                                    if let Some((account_id, _, _)) =
-                                        accounts.iter().find(|(_, _, acc_type)| acc_type == "Desk")
+                                    if let Some((account_id, _, _, _)) = accounts
+                                        .iter()
+                                        .find(|(_, _, acc_type, _)| acc_type == "Desk")
                                     {
                                         let metadata = DeskMetadata {
                                             client_handle,
@@ -156,7 +173,7 @@ impl Serve {
         // Store in account SQLite database
         let store_path = self.store_path(secret, network);
         let store = mosaic_miden::store::Store::new(&store_path)?;
-        store.insert_account(&account_id_bech32, network, "Desk")?;
+        store.insert_account(&account_id_bech32, network, "Desk", None)?;
 
         // Store in global desk database
         let desk_store = DeskStore::new(&self.desk_store_path)?;
@@ -276,6 +293,10 @@ impl Serve {
         self.store_path.join(dir_name)
     }
 
+    fn asset_store(&self) -> Result<AssetStore, anyhow::Error> {
+        Ok(AssetStore::open(&self.asset_store_path)?)
+    }
+
     fn store_path(&self, secret: [u8; 32], network: Network) -> PathBuf {
         self.client_path(secret, network).join("mosaic.sqlite3")
     }
@@ -292,7 +313,7 @@ impl Serve {
     pub async fn list_accounts(
         &self,
         secret: [u8; 32],
-    ) -> Result<Vec<(String, String, String)>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<(String, String, String, Option<String>)>, Box<dyn std::error::Error>> {
         let mut all_accounts = Vec::new();
 
         // Check both testnet and localnet directories
@@ -306,12 +327,36 @@ impl Serve {
             let store = mosaic_miden::store::Store::new(&store_path)?;
             let accounts = store.list_accounts()?;
 
-            for (account_id, network_str, account_type) in accounts {
-                all_accounts.push((account_id, network_str, account_type));
+            for (account_id, network_str, account_type, name) in accounts {
+                all_accounts.push((account_id, network_str, account_type, name));
             }
         }
 
         Ok(all_accounts)
+    }
+
+    pub fn register_asset(
+        &self,
+        secret: [u8; 32],
+        asset: RegistryAsset<'_>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let store = self.asset_store()?;
+        let user_key = Self::secret_to_string(secret);
+        store.insert_asset(&user_key, &asset)?;
+        Ok(())
+    }
+
+    pub fn list_assets_for_user(
+        &self,
+        secret: [u8; 32],
+    ) -> Result<Vec<RegistryStoredAsset>, Box<dyn std::error::Error>> {
+        let store = self.asset_store()?;
+        let user_key = Self::secret_to_string(secret);
+        Ok(store.list_assets_for_user(&user_key)?)
+    }
+
+    pub fn list_default_assets(&self) -> Vec<RegistryStoredAsset> {
+        default_assets()
     }
 
     pub async fn get_client(
@@ -338,6 +383,7 @@ impl Serve {
         secret: [u8; 32],
         account_type: AccountType,
         network: Network,
+        name: Option<&str>,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let path = self.client_path(secret, network);
         Self::check_or_create(&path)?;
@@ -370,7 +416,7 @@ impl Serve {
             AccountType::Faucet => "Faucet",
         };
 
-        store.insert_account(&account_id_bech32, network, account_type_str)?;
+        store.insert_account(&account_id_bech32, network, account_type_str, name)?;
 
         Ok(account_id_bech32)
     }
@@ -389,7 +435,7 @@ impl Serve {
         let client_handle = self.get_client(secret, network).await?;
 
         let account = client_handle
-            .create_faucet_account(token_symbol, decimals, max_supply)
+            .create_faucet_account(token_symbol.clone(), decimals, max_supply)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create faucet account: {}", e))?;
 
@@ -406,7 +452,12 @@ impl Serve {
         let store_path = self.store_path(secret, network);
         let store = mosaic_miden::store::Store::new(&store_path)?;
 
-        store.insert_account(&account_id_bech32, network, "Faucet")?;
+        store.insert_account(
+            &account_id_bech32,
+            network,
+            "Faucet",
+            Some(token_symbol.as_str()),
+        )?;
 
         Ok(account_id_bech32)
     }
@@ -643,8 +694,8 @@ impl Serve {
 
         let account_type = all_accounts
             .iter()
-            .find(|(id, _, _)| id == &account_id_bech32)
-            .map(|(_, _, typ)| typ.clone())
+            .find(|(id, _, _, _)| id == &account_id_bech32)
+            .map(|(_, _, typ, _)| typ.clone())
             .unwrap_or_else(|| "Unknown".to_string());
 
         // Get account status from client

@@ -67,6 +67,9 @@ fn json_content<T: serde::Serialize>(
 pub struct CreateClientAccountRequest {
     /// Network: "Testnet" or "Localnet"
     pub network: String,
+    /// Optional display name for the account
+    #[serde(default)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -97,6 +100,28 @@ pub struct CreateFaucetAccountRequest {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListAccountsRequest {}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListAssetsRequest {}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct RegisterAssetRequest {
+    pub symbol: String,
+    pub account: String,
+    pub max_supply: String,
+    pub decimals: u8,
+    #[serde(default)]
+    pub verified: bool,
+    #[serde(default)]
+    pub owner: bool,
+    #[serde(default)]
+    pub hidden: bool,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct RegisterAssetResponse {
+    pub success: bool,
+}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ClientSyncRequest {
@@ -208,6 +233,8 @@ pub struct VersionRequest {}
 pub struct CreateClientAccountResponse {
     pub success: bool,
     pub account_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
@@ -238,6 +265,8 @@ pub struct AccountInfo {
     pub account_id: String,
     pub network: String,
     pub account_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
@@ -352,11 +381,24 @@ impl Mosaic {
             }
         };
 
+        // Normalize account name (trim whitespace and ignore empty values)
+        let name_for_store = req
+            .name
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_string());
+
         // Create the client account
         let account_id_bech32 = {
             let mut serve = self.serve.lock().await;
             serve
-                .new_account(secret, AccountType::Client, network)
+                .new_account(
+                    secret,
+                    AccountType::Client,
+                    network,
+                    name_for_store.as_deref(),
+                )
                 .await
                 .map_err(|e| {
                     let error_msg = format!("Failed to create client account: {}", e);
@@ -373,15 +415,75 @@ impl Mosaic {
             tool = "create_client_account",
             account_id = %account_id_bech32,
             network = %req.network,
+            name = ?name_for_store,
             "Created client account"
         );
 
         let response = CreateClientAccountResponse {
             success: true,
             account_id: account_id_bech32,
+            name: name_for_store,
         };
 
         let content = json_content(&response, "create_client_account response")?;
+
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(description = "List all available Mosaic assets")]
+    async fn list_assets(
+        &self,
+        Parameters(_req): Parameters<ListAssetsRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let maybe_secret = derive_secret_from_context(&context).ok();
+
+        let assets = {
+            let serve = self.serve.lock().await;
+            match maybe_secret {
+                Some(secret) => serve.list_assets_for_user(secret).map_err(|e| {
+                    let error_msg = format!("Failed to list assets: {}", e);
+                    tracing::error!(error = %error_msg, "Failed to list assets");
+                    McpError::internal_error(error_msg, None)
+                })?,
+                None => serve.list_default_assets(),
+            }
+        };
+
+        let content = json_content(&assets, "list_assets response")?;
+
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(description = "Register an asset for the authenticated user")]
+    async fn register_asset(
+        &self,
+        Parameters(req): Parameters<RegisterAssetRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let secret = derive_secret_from_context(&context)?;
+
+        {
+            let serve = self.serve.lock().await;
+            let new_asset = mosaic_serve::asset_store::NewAsset {
+                symbol: &req.symbol,
+                account: &req.account,
+                max_supply: &req.max_supply,
+                decimals: req.decimals,
+                verified: req.verified,
+                owner: req.owner,
+                hidden: req.hidden,
+            };
+
+            serve.register_asset(secret, new_asset).map_err(|e| {
+                let error_msg = format!("Failed to register asset: {}", e);
+                tracing::error!(error = %error_msg, "Failed to register asset");
+                McpError::internal_error(error_msg, None)
+            })?;
+        }
+
+        let response = RegisterAssetResponse { success: true };
+        let content = json_content(&response, "register_asset response")?;
 
         Ok(CallToolResult::success(vec![content]))
     }
@@ -475,7 +577,7 @@ impl Mosaic {
         let account_id_bech32 = {
             let mut serve = self.serve.lock().await;
             serve
-                .new_account(secret, AccountType::Liquidity, network)
+                .new_account(secret, AccountType::Liquidity, network, None)
                 .await
                 .map_err(|e| {
                     let error_msg = format!("Failed to create liquidity account: {}", e);
@@ -533,7 +635,7 @@ impl Mosaic {
         // Create the faucet account
         let account_id_bech32 = {
             let mut serve = self.serve.lock().await;
-            serve
+            let account_id = serve
                 .new_faucet_account(
                     secret,
                     network,
@@ -551,7 +653,23 @@ impl Mosaic {
                         "Failed to create faucet account"
                     );
                     McpError::internal_error(error_msg, None)
-                })?
+                })?;
+
+            let asset = mosaic_serve::asset_store::NewAsset {
+                symbol: &req.token_symbol,
+                account: &account_id,
+                max_supply: &req.max_supply.to_string(),
+                decimals: req.decimals,
+                verified: true,
+                owner: true,
+                hidden: false,
+            };
+
+            if let Err(err) = serve.register_asset(secret, asset) {
+                tracing::warn!(error = %err, "Failed to register faucet asset for user");
+            }
+
+            account_id
         };
 
         tracing::info!(
@@ -606,10 +724,11 @@ impl Mosaic {
 
         let account_infos: Vec<AccountInfo> = accounts
             .into_iter()
-            .map(|(account_id, network, account_type)| AccountInfo {
+            .map(|(account_id, network, account_type, name)| AccountInfo {
                 account_id,
                 network,
                 account_type,
+                name,
             })
             .collect();
 
@@ -1039,7 +1158,7 @@ impl Mosaic {
             Network::Localnet => "Localnet",
         };
 
-        let owns_desk = accounts.iter().any(|(account_id, network, _)| {
+        let owns_desk = accounts.iter().any(|(account_id, network, _, _)| {
             account_id == &desk_account_id && network == desk_network_label
         });
 
@@ -1203,7 +1322,7 @@ impl ServerHandler for Mosaic {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("Mosaic MCP server. Available tools: create_client_account, create_desk_account, create_liquidity_account, create_faucet_account, list_accounts, client_sync, create_order, create_raw_note, get_account_status, consume_note, desk_push_note, get_desk_info, flush, version.".to_string()),
+            instructions: Some("Mosaic MCP server. Available tools: create_client_account, create_desk_account, create_liquidity_account, create_faucet_account, list_accounts, list_assets, register_asset, client_sync, create_order, create_raw_note, get_account_status, consume_note, desk_push_note, get_desk_info, flush, version.".to_string()),
         }
     }
 
