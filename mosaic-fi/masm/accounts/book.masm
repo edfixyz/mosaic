@@ -8,34 +8,51 @@ const.CONFIG_QUOTE = 2
 const.CONFIG_NAME = 3
 const.CONFIG_RESERVED = 4
 
-# Sell side
-const.COUNTER_SLOT_SELL = 5
-const.BOOK_SLOT_SELL = 6
-const.BOOK_HEAD_SLOT_SELL = 7
-const.BOOK_RESERVED0_SELL = 8
-const.BOOK_RESERVED1_SELL = 9
+# Offsets
+const.COUNTER_OFFSET = 0
+const.BOOK_OFFSET = 1
+const.BOOK_HEAD_OFFSET = 2
+const.BOOK_RESERVED0_SELL = 3
+const.BOOK_RESERVED1_SELL = 4
 
-# Buy side
-const.COUNTER_SLOT_BUY = 10
-const.BOOK_SLOT_BUY = 11
-const.BOOK_HEAD_SLOT_BUY = 12
-const.BOOK_RESERVED0_SELL = 13
-const.BOOK_RESERVED1_SELL = 14
+const.OFFSET_SELL = 5
+const.OFFSET_BUY = 10
 
 # Book slot format: map [0, 0, 0, this_id] -> [previous_id, next_id, price, amount]
 # Book head slot format: [zero, zero, zero, this_id]
 
+proc.compute_slot
+    # => [offset]
+
+    mem_load.0
+    # => [side, offset]
+
+    push.0 eq
+    if.true
+        push.OFFSET_SELL
+    else
+        push.OFFSET_BUY
+    end
+    # => [base, offset]
+
+    add
+    # => [slot]
+end
+
 #
-# Insert an offer (side: SELL)
+# Insert an offer
 #   TODO: store INTENT_UUID
 #
-export.insert_offer_sell
+export.insert_offer
+    # => [side, INTENT_UUID, price, amount]
+
+    mem_store.0
     # => [INTENT_UUID, price, amount]
 
     dropw
     # => [price, amount]
 
-    push.BOOK_HEAD_SLOT
+    push.BOOK_HEAD_OFFSET exec.compute_slot
     exec.account::get_item
     # => [zero, zero, zero, head_id, price, amount]
 
@@ -71,14 +88,19 @@ export.insert_offer_sell
 
                 push.0 # Stop loop
             else
-                dup push.0.0.0 push.BOOK_SLOT
+                dup push.0.0.0 push.BOOK_OFFSET exec.compute_slot
                 exec.account::get_map_item                    
                 # => [current_previous_id, current_next_id, current_price, current_amount, current_id, previous_id, price, amount]
 
                 dup.6 dup.3
                 # => [current_price, price, current_previous_id, current_next_id, current_price, current_amount, current_id, previous_id, price, amount]
 
-                lte
+                mem_load.0 push.0 eq
+                if.true
+                    lte # Sell side
+                else
+                    gte # Buy side
+                end
                 if.true
                     # => [current_previous_id, current_next_id, current_price, current_amount, current_id, previous_id, price, amount]
 
@@ -102,7 +124,6 @@ export.insert_offer_sell
     end
 end
 
-
 #
 # Insert before the current_id entry (cannot be null)
 #
@@ -114,7 +135,8 @@ proc.insert_before
         exec.insert_first
     else
         dup push.0.0.0
-        push.BOOK_SLOT exec.account::get_map_item
+        push.BOOK_OFFSET exec.compute_slot
+        exec.account::get_map_item
         # => [current_previous_id, current_next_id, current_price, current_amount, current_id, price, amount]
 
         movup.2 drop movup.2 drop swap drop
@@ -127,7 +149,7 @@ proc.insert_before
         # => [id, current_previous_id, current_id, price, amount, id, current_previous_id, current_id]
 
         push.0.0.0        
-        push.BOOK_SLOT
+        push.BOOK_OFFSET exec.compute_slot
         exec.account::set_map_item
         dropw dropw
         # => [id, current_previous_id, current_id]
@@ -144,7 +166,7 @@ proc.insert_before
             dup.1
             # => [id, current_previous_id, id, id, current_id]
 
-            push.0.0.0 push.BOOK_HEAD_SLOT
+            push.0.0.0 push.BOOK_HEAD_OFFSET exec.compute_slot
             exec.account::set_item
             dropw
             # => [current_previous_id, id, id, current_id]
@@ -192,7 +214,8 @@ proc.insert_last
         # => [id, previous_id, next_id=0, price, amount, previous_id, id]
 
         push.0.0.0
-        push.BOOK_SLOT exec.account::set_map_item
+        push.BOOK_OFFSET exec.compute_slot
+        exec.account::set_map_item
         dropw dropw
         # => [previous_id, id]
 
@@ -220,13 +243,14 @@ proc.insert_first
     # => [id, previous_id=0, next_id, price, amount, next_id, id]
 
     dup push.0.0.0
-    push.BOOK_HEAD_SLOT
+    push.BOOK_HEAD_OFFSET exec.compute_slot
     exec.account::set_item
     dropw
     # => [id, previous_id=0, next_id, price, amount, next_id, id]
 
     push.0.0.0
-    push.BOOK_SLOT exec.account::set_map_item
+    push.BOOK_OFFSET exec.compute_slot
+    exec.account::set_map_item
     dropw dropw
     # => [next_id, id]
 
@@ -252,7 +276,7 @@ proc.update_next
         dup.1 push.0.0.0
         # => [0, 0, 0, id, updated_next_id, id]
 
-        push.BOOK_SLOT
+        push.BOOK_OFFSET exec.compute_slot
         exec.account::get_map_item
         # => [previous_id, next_id, price, amount, updated_next_id, id]
 
@@ -265,7 +289,7 @@ proc.update_next
         movup.4 push.0.0.0
         # => [zero, zero, zero, id, previous_id, updated_next_id, price, amount]
 
-        push.BOOK_SLOT
+        push.BOOK_OFFSET exec.compute_slot
         exec.account::set_map_item
         dropw dropw
         # => []
@@ -290,7 +314,7 @@ proc.update_previous
         dup.1 push.0.0.0
         # => [0, 0, 0, id, updated_previous_id, id]
 
-        push.BOOK_SLOT
+        push.BOOK_OFFSET exec.compute_slot
         exec.account::get_map_item
         # => [previous_id, next_id, price, amount, updated_previous_id, id]
 
@@ -303,7 +327,7 @@ proc.update_previous
         movup.4 push.0.0.0
         # => [zero, zero, zero, id, updated_previous_id, next_id, price, amount]
 
-        push.BOOK_SLOT
+        push.BOOK_OFFSET exec.compute_slot
         exec.account::set_map_item
         dropw dropw
         # => []
@@ -315,7 +339,7 @@ end
 #
 #
 proc.increment_count
-    push.COUNTER_SLOT
+    push.COUNTER_OFFSET exec.compute_slot
     # => [index]
 
     exec.account::get_item
@@ -334,7 +358,7 @@ proc.increment_count
     # Catch overflow
     # => [count+1, 0, 0, 0]
 
-    push.COUNTER_SLOT
+    push.COUNTER_OFFSET exec.compute_slot
     # => [index, count+1, 0, 0, 0]
 
     exec.account::set_item

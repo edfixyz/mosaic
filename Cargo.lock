@@ -2051,6 +2051,7 @@ dependencies = [
  "mosaic-miden",
  "rand",
  "rusqlite",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

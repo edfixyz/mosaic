@@ -17,6 +17,7 @@ export type MarketDescription = {
 export type CreateClientAccountResponse = {
   success: boolean
   account_id: string
+  name?: string
 }
 
 export type CreateDeskAccountResponse = {
@@ -43,6 +44,7 @@ export type AccountInfo = {
   account_id: string
   network: string
   account_type: string
+  name?: string | null
 }
 
 export type ListAccountsResponse = {
@@ -110,9 +112,122 @@ export type VersionResponse = {
   version: string
 }
 
+export type AssetSummary = {
+  account: string
+  symbol: string
+  maxSupply: string
+  decimals: number
+  verified: boolean
+  owner: boolean
+  hidden: boolean
+}
+
+export type ListAssetsResponse = AssetSummary[]
+
+export type RegisterAssetResponse = {
+  success: boolean
+}
+
+export type StoredOrderSummary = {
+  uuid: string
+  order_type: string
+  order_json: string
+  stage: string
+  status: string
+  account: string
+  created_at?: string | null
+}
+
+export type RoleSettings = {
+  is_client: boolean
+  is_liquidity_provider: boolean
+  is_desk: boolean
+}
+
+export type OrderSide = 'BUY' | 'SELL'
+
+type OrderUuid = string | number
+type OrderAmount = number
+type OrderPrice = number
+
+type QuoteRequestOrder = {
+  QuoteRequest: {
+    market: string
+    uuid: OrderUuid
+    side: OrderSide
+    amount: OrderAmount
+  }
+}
+
+type QuoteRequestOfferOrder = {
+  QuoteRequestOffer: {
+    market: string
+    uuid: OrderUuid
+    side: OrderSide
+    amount: OrderAmount
+    price: OrderPrice
+  }
+}
+
+type QuoteRequestNoOfferOrder = {
+  QuoteRequestNoOffer: {
+    market: string
+    uuid: OrderUuid
+  }
+}
+
+type LimitOrder = {
+  LimitOrder: {
+    market: string
+    uuid: OrderUuid
+    side: OrderSide
+    amount: OrderAmount
+    price: OrderPrice
+  }
+}
+
+type LiquidityOfferOrder = {
+  LiquidityOffer: {
+    market: string
+    uuid: OrderUuid
+    side: OrderSide
+    amount: OrderAmount
+    price: OrderPrice
+  }
+}
+
+type FundAccountOrder = {
+  FundAccount: {
+    target_account_id: string
+    amount: OrderAmount
+  }
+}
+
+type KycpassedOrder = {
+  KYCPassed: {
+    market: string
+  }
+}
+
+type OrderUnitVariant =
+  | 'LimitBuyOrderLocked'
+  | 'LimitBuyOrderNotLocked'
+  | 'LimitSellOrderLocked'
+  | 'LimitSellOrderNotLocked'
+
+export type OrderPayload =
+  | KycpassedOrder
+  | QuoteRequestOfferOrder
+  | QuoteRequestNoOfferOrder
+  | QuoteRequestOrder
+  | LimitOrder
+  | LiquidityOfferOrder
+  | FundAccountOrder
+  | OrderUnitVariant
+
 export type ToolDefinitions = {
   create_client_account: {
-    args: { network: NetworkName }
+    args: { network: NetworkName; name?: string }
     result: CreateClientAccountResponse
   }
   create_desk_account: {
@@ -144,10 +259,22 @@ export type ToolDefinitions = {
     args: {
       network: NetworkName
       account_id: string
-      order: unknown
+      order: OrderPayload
       commit?: boolean
     }
     result: CreateOrderResponse
+  }
+  list_orders: {
+    args: EmptyArgs
+    result: StoredOrderSummary[]
+  }
+  get_role_settings: {
+    args: EmptyArgs
+    result: RoleSettings
+  }
+  update_role_settings: {
+    args: RoleSettings
+    result: RoleSettings
   }
   create_raw_note: {
     args: {
@@ -197,6 +324,22 @@ export type ToolDefinitions = {
     args: EmptyArgs
     result: VersionResponse
   }
+  list_assets: {
+    args: EmptyArgs
+    result: ListAssetsResponse
+  }
+  register_asset: {
+    args: {
+      symbol: string
+      account: string
+      max_supply: string
+      decimals: number
+      verified?: boolean
+      owner?: boolean
+      hidden?: boolean
+    }
+    result: RegisterAssetResponse
+  }
 }
 
 export type ToolName = keyof ToolDefinitions
@@ -242,7 +385,7 @@ function normalizeArgs(args: Record<string, unknown> | EmptyArgs): Record<string
 export async function callMcpTool<Name extends ToolName>(
   name: Name,
   args: ToolArgs<Name>,
-  accessToken: string
+  accessToken?: string | null
 ): Promise<ToolResult<Name>> {
   const raw = await callMCPTool(name, normalizeArgs(args as Record<string, unknown>), accessToken)
   return parseToolResult<ToolResult<Name>>(name, raw)

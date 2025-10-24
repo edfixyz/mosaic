@@ -10,7 +10,7 @@ use clap::Parser;
 use mosaic_fi::note::MosaicNote;
 use mosaic_mcp::Mosaic;
 use mosaic_miden::Network;
-use mosaic_serve::Serve;
+use mosaic_serve::{Serve, asset_store::default_assets};
 use rmcp::transport::streamable_http_server::{
     StreamableHttpService, session::local::LocalSessionManager,
 };
@@ -116,6 +116,8 @@ struct AssetSummary {
     max_supply: String,
     decimals: u8,
     verified: bool,
+    owner: bool,
+    hidden: bool,
 }
 
 // GET /desk/{uuid}
@@ -197,13 +199,18 @@ async fn desk_push_note_handler(
 }
 
 async fn list_assets_handler() -> impl IntoResponse {
-    let assets = vec![AssetSummary {
-        account: "mtst1qrkc5sp34wkncgr9tp9ghjsjv9cqq0u8da0".to_string(),
-        symbol: "BTC".to_string(),
-        max_supply: "2100000000000000".to_string(),
-        decimals: 8,
-        verified: true,
-    }];
+    let assets: Vec<AssetSummary> = default_assets()
+        .into_iter()
+        .map(|asset| AssetSummary {
+            account: asset.account,
+            symbol: asset.symbol,
+            max_supply: asset.max_supply,
+            decimals: asset.decimals,
+            verified: asset.verified,
+            owner: asset.owner,
+            hidden: asset.hidden,
+        })
+        .collect();
 
     (StatusCode::OK, Json(assets))
 }

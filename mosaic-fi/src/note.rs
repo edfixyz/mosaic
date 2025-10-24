@@ -63,6 +63,7 @@ pub enum Order {
     LiquidityOffer {
         market: Market,
         uuid: UUID,
+        side: Side,
         amount: Amount,
         price: Price,
     },
@@ -97,6 +98,7 @@ pub fn compile_note_from_account_id(
         Order::LiquidityOffer {
             ref market,
             uuid,
+            side,
             amount,
             price,
         } => {
@@ -112,10 +114,12 @@ pub fn compile_note_from_account_id(
             let secret = Word::default();
             let uuid_high = (uuid >> 64) as u64;
             let uuid_low = uuid as u64;
+            let side: u64 = if side == Side::SELL { 0 } else { 1 };
             let inputs = vec![
                 ("uuid".to_string(), Value::Word([uuid_high, uuid_low, 0, 0])),
                 ("amount".to_string(), Value::Element(amount)),
                 ("price".to_string(), Value::Element(price)),
+                ("side".to_string(), Value::Element(side)),
             ];
             let miden_note: MidenNote =
                 mosaic_miden::note::compile_note(abs_note, account_id, secret, inputs)?;

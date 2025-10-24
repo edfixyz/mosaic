@@ -1,6 +1,7 @@
 use mosaic_fi::note::{MosaicNote, MosaicNoteStatus};
 use mosaic_fi::{AccountType, Market};
 use mosaic_miden::client::ClientHandle;
+use mosaic_miden::store::{AssetRecord, OrderRecord, SettingsRecord};
 use mosaic_miden::{MidenTransactionId, Network};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,35 @@ use uuid::Uuid;
 
 pub mod desk_store;
 use desk_store::DeskStore;
+pub mod asset_store;
+use asset_store::{StoredAsset as RegistryStoredAsset, default_assets};
+
+pub struct RegistryAsset<'a> {
+    pub symbol: &'a str,
+    pub account: &'a str,
+    pub decimals: u8,
+    pub max_supply: Option<&'a str>,
+    pub owned: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StoredOrder {
+    pub uuid: String,
+    pub order_type: String,
+    pub order_json: String,
+    pub stage: String,
+    pub status: String,
+    pub account: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RoleSettings {
+    pub is_client: bool,
+    pub is_liquidity_provider: bool,
+    pub is_desk: bool,
+}
 
 /// Desk metadata cached in memory
 pub struct DeskMetadata {
@@ -67,8 +97,9 @@ impl Serve {
                             match store.list_accounts() {
                                 Ok(accounts) => {
                                     // Find the Desk account
-                                    if let Some((account_id, _, _)) =
-                                        accounts.iter().find(|(_, _, acc_type)| acc_type == "Desk")
+                                    if let Some((account_id, _, _, _)) = accounts
+                                        .iter()
+                                        .find(|(_, _, acc_type, _)| acc_type == "Desk")
                                     {
                                         let metadata = DeskMetadata {
                                             client_handle,
@@ -156,7 +187,7 @@ impl Serve {
         // Store in account SQLite database
         let store_path = self.store_path(secret, network);
         let store = mosaic_miden::store::Store::new(&store_path)?;
-        store.insert_account(&account_id_bech32, network, "Desk")?;
+        store.insert_account(&account_id_bech32, network, "Desk", None)?;
 
         // Store in global desk database
         let desk_store = DeskStore::new(&self.desk_store_path)?;
@@ -266,6 +297,41 @@ impl Serve {
         bs58::encode(secret).into_string()
     }
 
+    fn network_from_account(account: &str) -> Result<Network, anyhow::Error> {
+        let (network_id, _) = miden_objects::address::Address::from_bech32(account)
+            .map_err(|e| anyhow::anyhow!("Invalid account '{}': {}", account, e))?;
+
+        Network::from_network_id(network_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unsupported network '{}' for account {}",
+                network_id,
+                account
+            )
+        })
+    }
+
+    fn order_metadata(order: &mosaic_fi::note::Order) -> (String, Option<String>) {
+        use mosaic_fi::note::Order::*;
+
+        match order {
+            KYCPassed { .. } => ("KYCPassed".to_string(), None),
+            QuoteRequestOffer { uuid, .. } => {
+                ("QuoteRequestOffer".to_string(), Some(uuid.to_string()))
+            }
+            QuoteRequestNoOffer { uuid, .. } => {
+                ("QuoteRequestNoOffer".to_string(), Some(uuid.to_string()))
+            }
+            QuoteRequest { uuid, .. } => ("QuoteRequest".to_string(), Some(uuid.to_string())),
+            LimitOrder { uuid, .. } => ("LimitOrder".to_string(), Some(uuid.to_string())),
+            LiquidityOffer { uuid, .. } => ("LiquidityOffer".to_string(), Some(uuid.to_string())),
+            FundAccount { .. } => ("FundAccount".to_string(), None),
+            LimitBuyOrderLocked => ("LimitBuyOrderLocked".to_string(), None),
+            LimitBuyOrderNotLocked => ("LimitBuyOrderNotLocked".to_string(), None),
+            LimitSellOrderLocked => ("LimitSellOrderLocked".to_string(), None),
+            LimitSellOrderNotLocked => ("LimitSellOrderNotLocked".to_string(), None),
+        }
+    }
+
     fn client_path(&self, secret: [u8; 32], network: Network) -> PathBuf {
         let secret_str = Self::secret_to_string(secret);
         let network_prefix = match network {
@@ -292,7 +358,7 @@ impl Serve {
     pub async fn list_accounts(
         &self,
         secret: [u8; 32],
-    ) -> Result<Vec<(String, String, String)>, Box<dyn std::error::Error>> {
+    ) -> Result<Vec<(String, String, String, Option<String>)>, Box<dyn std::error::Error>> {
         let mut all_accounts = Vec::new();
 
         // Check both testnet and localnet directories
@@ -306,12 +372,156 @@ impl Serve {
             let store = mosaic_miden::store::Store::new(&store_path)?;
             let accounts = store.list_accounts()?;
 
-            for (account_id, network_str, account_type) in accounts {
-                all_accounts.push((account_id, network_str, account_type));
+            for (account_id, network_str, account_type, name) in accounts {
+                all_accounts.push((account_id, network_str, account_type, name));
             }
         }
 
         Ok(all_accounts)
+    }
+
+    pub fn register_asset(
+        &self,
+        secret: [u8; 32],
+        asset: RegistryAsset<'_>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let network = Self::network_from_account(asset.account)?;
+        let client_dir = self.client_path(secret, network);
+        Self::check_or_create(&client_dir)?;
+
+        let store_path = client_dir.join("mosaic.sqlite3");
+        let store = mosaic_miden::store::Store::new(&store_path)?;
+
+        let record = AssetRecord {
+            symbol: asset.symbol.to_string(),
+            account: asset.account.to_string(),
+            decimals: asset.decimals,
+            max_supply: asset.max_supply.map(|value| value.to_string()),
+            owned: asset.owned,
+        };
+
+        store.upsert_asset(&record)?;
+        Ok(())
+    }
+
+    pub fn list_assets_for_user(
+        &self,
+        secret: [u8; 32],
+    ) -> Result<Vec<RegistryStoredAsset>, Box<dyn std::error::Error>> {
+        let mut assets_map: HashMap<String, RegistryStoredAsset> = HashMap::new();
+
+        for asset in default_assets() {
+            let key = format!("{}::{}", asset.account, asset.symbol);
+            assets_map.insert(key, asset);
+        }
+
+        for network in [Network::Testnet, Network::Localnet] {
+            let client_dir = self.client_path(secret, network);
+            if !client_dir.exists() {
+                continue;
+            }
+
+            let store_path = client_dir.join("mosaic.sqlite3");
+            let store = mosaic_miden::store::Store::new(&store_path)?;
+
+            for asset in store.list_assets()? {
+                let max_supply = asset.max_supply.clone().unwrap_or_else(|| "0".to_string());
+
+                let key = format!("{}::{}", asset.account, asset.symbol);
+                assets_map.insert(
+                    key,
+                    RegistryStoredAsset {
+                        symbol: asset.symbol,
+                        account: asset.account,
+                        max_supply,
+                        decimals: asset.decimals,
+                        verified: asset.owned,
+                        owner: asset.owned,
+                        hidden: false,
+                    },
+                );
+            }
+        }
+
+        Ok(assets_map.into_values().collect())
+    }
+
+    pub fn list_orders_for_user(
+        &self,
+        secret: [u8; 32],
+    ) -> Result<Vec<StoredOrder>, Box<dyn std::error::Error>> {
+        let mut orders = Vec::new();
+
+        for network in [Network::Testnet, Network::Localnet] {
+            let client_dir = self.client_path(secret, network);
+            if !client_dir.exists() {
+                continue;
+            }
+
+            let store_path = client_dir.join("mosaic.sqlite3");
+            let store = mosaic_miden::store::Store::new(&store_path)?;
+
+            for order in store.list_orders()? {
+                orders.push(StoredOrder {
+                    uuid: order.uuid,
+                    order_type: order.order_type,
+                    order_json: order.order_json,
+                    stage: order.stage,
+                    status: order.status,
+                    account: order.account,
+                    created_at: order.created_at,
+                });
+            }
+        }
+
+        orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(orders)
+    }
+
+    pub fn get_role_settings(
+        &self,
+        secret: [u8; 32],
+    ) -> Result<RoleSettings, Box<dyn std::error::Error>> {
+        let client_dir = self.client_path(secret, Network::Testnet);
+        let store_path = client_dir.join("mosaic.sqlite3");
+        let store = mosaic_miden::store::Store::new(&store_path)?;
+
+        let settings = store.get_settings()?;
+        Ok(RoleSettings {
+            is_client: settings.is_client,
+            is_liquidity_provider: settings.is_liquidity_provider,
+            is_desk: settings.is_desk,
+        })
+    }
+
+    pub fn update_role_settings(
+        &self,
+        secret: [u8; 32],
+        settings: RoleSettings,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let client_dir = self.client_path(secret, Network::Testnet);
+        Self::check_or_create(&client_dir)?;
+        let store_path = client_dir.join("mosaic.sqlite3");
+        let store = match mosaic_miden::store::Store::new(&store_path) {
+            Ok(store) => store,
+            Err(_) => {
+                Self::check_or_create(&client_dir)
+                    .map_err(|e| anyhow::anyhow!("Failed to initialise client directory: {}", e))?;
+                mosaic_miden::store::Store::new(&store_path)?
+            }
+        };
+
+        let record = SettingsRecord {
+            is_client: settings.is_client,
+            is_liquidity_provider: settings.is_liquidity_provider,
+            is_desk: settings.is_desk,
+        };
+        store.update_settings(&record)?;
+        Ok(())
+    }
+
+    pub fn list_default_assets(&self) -> Vec<RegistryStoredAsset> {
+        default_assets()
     }
 
     pub async fn get_client(
@@ -338,6 +548,7 @@ impl Serve {
         secret: [u8; 32],
         account_type: AccountType,
         network: Network,
+        name: Option<&str>,
     ) -> Result<String, Box<dyn std::error::Error>> {
         let path = self.client_path(secret, network);
         Self::check_or_create(&path)?;
@@ -370,7 +581,7 @@ impl Serve {
             AccountType::Faucet => "Faucet",
         };
 
-        store.insert_account(&account_id_bech32, network, account_type_str)?;
+        store.insert_account(&account_id_bech32, network, account_type_str, name)?;
 
         Ok(account_id_bech32)
     }
@@ -389,7 +600,7 @@ impl Serve {
         let client_handle = self.get_client(secret, network).await?;
 
         let account = client_handle
-            .create_faucet_account(token_symbol, decimals, max_supply)
+            .create_faucet_account(token_symbol.clone(), decimals, max_supply)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create faucet account: {}", e))?;
 
@@ -406,7 +617,12 @@ impl Serve {
         let store_path = self.store_path(secret, network);
         let store = mosaic_miden::store::Store::new(&store_path)?;
 
-        store.insert_account(&account_id_bech32, network, "Faucet")?;
+        store.insert_account(
+            &account_id_bech32,
+            network,
+            "Faucet",
+            Some(token_symbol.as_str()),
+        )?;
 
         Ok(account_id_bech32)
     }
@@ -432,22 +648,66 @@ impl Serve {
             }
         };
 
+        let store_path = self.store_path(secret, network);
+        let store = mosaic_miden::store::Store::new(&store_path)?;
+
         let _account_record = client_handle
             .get_account(account_id)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get account: {}", e))?
             .ok_or_else(|| anyhow::anyhow!("Account not found: {}", account_id_bech32))?;
 
-        let mut mosaic_note = mosaic_fi::note::compile_note_from_account_id(account_id, order)?;
+        let order_clone = order.clone();
+        let (order_type, uuid_opt) = Self::order_metadata(&order_clone);
+        let generated_uuid = uuid_opt.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let order_json = serde_json::to_string(&order_clone)?;
+
+        let mut order_record = OrderRecord {
+            uuid: generated_uuid.clone(),
+            order_type,
+            order_json,
+            stage: "create".to_string(),
+            status: String::new(),
+            account: account_id_bech32.clone(),
+            created_at: None,
+        };
+
+        let mut mosaic_note = match mosaic_fi::note::compile_note_from_account_id(account_id, order)
+        {
+            Ok(note) => note,
+            Err(err) => {
+                order_record.status = "failed".to_string();
+                let _ = store.upsert_order(&order_record);
+                return Err(err);
+            }
+        };
 
         if commit {
-            let tx_commit_id = client_handle
+            match client_handle
                 .commit_note(account_id, mosaic_note.miden_note.miden_note_hex.clone())
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to commit note: {}", e))?;
-
-            mosaic_note.status = MosaicNoteStatus::Committed(tx_commit_id);
+            {
+                Ok(tx_commit_id) => {
+                    mosaic_note.status = MosaicNoteStatus::Committed(tx_commit_id);
+                }
+                Err(e) => {
+                    order_record.status = "failed".to_string();
+                    let _ = store.upsert_order(&order_record);
+                    return Err(anyhow::anyhow!("Failed to commit note: {}", e).into());
+                }
+            }
         }
+
+        order_record.status = if commit {
+            match mosaic_note.status {
+                MosaicNoteStatus::Committed(_) => "committed".to_string(),
+                _ => "created".to_string(),
+            }
+        } else {
+            "created".to_string()
+        };
+
+        store.upsert_order(&order_record)?;
 
         Ok(mosaic_note)
     }
@@ -643,8 +903,8 @@ impl Serve {
 
         let account_type = all_accounts
             .iter()
-            .find(|(id, _, _)| id == &account_id_bech32)
-            .map(|(_, _, typ)| typ.clone())
+            .find(|(id, _, _, _)| id == &account_id_bech32)
+            .map(|(_, _, typ, _)| typ.clone())
             .unwrap_or_else(|| "Unknown".to_string());
 
         // Get account status from client

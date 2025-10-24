@@ -24,6 +24,18 @@ impl Network {
             Network::Localnet => NetworkId::new("mlcl").expect("mlcl should be a valid network ID"),
         }
     }
+
+    pub fn from_network_id(network_id: NetworkId) -> Option<Self> {
+        if network_id == NetworkId::Testnet {
+            return Some(Network::Testnet);
+        }
+
+        if network_id == Network::Localnet.to_network_id() {
+            return Some(Network::Localnet);
+        }
+
+        None
+    }
 }
 
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
