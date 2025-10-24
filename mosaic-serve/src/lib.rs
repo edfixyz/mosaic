@@ -3,7 +3,6 @@ use mosaic_fi::{AccountType, Market};
 use mosaic_miden::client::ClientHandle;
 use mosaic_miden::store::{AssetRecord, OrderRecord, SettingsRecord};
 use mosaic_miden::{MidenTransactionId, Network};
-use serde_json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
