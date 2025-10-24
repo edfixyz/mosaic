@@ -19,6 +19,17 @@ pub struct AssetRecord {
     pub owned: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct OrderRecord {
+    pub uuid: String,
+    pub order_type: String,
+    pub order_json: String,
+    pub stage: String,
+    pub status: String,
+    pub account: String,
+    pub created_at: Option<String>,
+}
+
 impl Store {
     /// Create or open a store at the given path
     pub fn new<P: AsRef<Path>>(path: P) -> SqliteResult<Self> {
@@ -183,12 +194,61 @@ impl Store {
 
         Ok(())
     }
+
+    pub fn upsert_order(&self, order: &OrderRecord) -> SqliteResult<()> {
+        if !self.has_account(&order.account)? {
+            return Err(rusqlite::Error::SqliteFailure(
+                ffi::Error::new(ffi::SQLITE_CONSTRAINT),
+                Some("Orders must reference an existing account".to_string()),
+            ));
+        }
+
+        self.conn.execute(
+            "INSERT OR REPLACE INTO orders (uuid, order_type, order_json, stage, status, account)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                order.uuid,
+                order.order_type,
+                order.order_json,
+                order.stage,
+                order.status,
+                order.account,
+            ],
+        )?;
+
+        Ok(())
+    }
+
+    pub fn list_orders(&self) -> SqliteResult<Vec<OrderRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT uuid, order_type, order_json, stage, status, account, created_at
+             FROM orders
+             ORDER BY datetime(created_at) DESC, uuid ASC",
+        )?;
+
+        let orders = stmt
+            .query_map([], |row| {
+                Ok(OrderRecord {
+                    uuid: row.get(0)?,
+                    order_type: row.get(1)?,
+                    order_json: row.get(2)?,
+                    stage: row.get(3)?,
+                    status: row.get(4)?,
+                    account: row.get(5)?,
+                    created_at: row.get(6)?,
+                })
+            })?
+            .collect::<SqliteResult<Vec<_>>>()?;
+
+        Ok(orders)
+    }
 }
 
 fn ensure_schema(conn: &mut Connection) -> SqliteResult<()> {
     let tx = conn.transaction()?;
     ensure_accounts_table(&tx)?;
     ensure_assets_table(&tx)?;
+    ensure_orders_table(&tx)?;
     tx.commit()
 }
 
@@ -297,6 +357,29 @@ fn assets_has_foreign_key(conn: &Connection) -> SqliteResult<bool> {
     Ok(rows.next()?.is_some())
 }
 
+fn ensure_orders_table(conn: &Connection) -> SqliteResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS orders (
+            uuid TEXT PRIMARY KEY,
+            order_type TEXT NOT NULL,
+            order_json TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            status TEXT NOT NULL,
+            account TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY(account) REFERENCES accounts(id) ON DELETE CASCADE
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS orders_account_idx ON orders(account)",
+        [],
+    )?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -393,5 +476,40 @@ mod tests {
         let assets = store.list_assets().unwrap();
         assert_eq!(assets.len(), 1);
         assert_eq!(assets[0].symbol, "MID");
+    }
+
+    #[test]
+    fn test_order_operations() {
+        let store = Store::new(":memory:").unwrap();
+
+        store
+            .insert_account("mtst_order_account", Network::Testnet, "Client", None)
+            .unwrap();
+
+        let order = OrderRecord {
+            uuid: "12345".to_string(),
+            order_type: "QuoteRequest".to_string(),
+            order_json: "{\"market\":\"BTC/USD\"}".to_string(),
+            stage: "create".to_string(),
+            status: "success".to_string(),
+            account: "mtst_order_account".to_string(),
+            created_at: None,
+        };
+
+        store.upsert_order(&order).unwrap();
+        let orders = store.list_orders().unwrap();
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].uuid, "12345");
+        assert_eq!(orders[0].order_type, "QuoteRequest");
+
+        let updated = OrderRecord {
+            status: "failed".to_string(),
+            ..order
+        };
+        store.upsert_order(&updated).unwrap();
+
+        let orders = store.list_orders().unwrap();
+        assert_eq!(orders.len(), 1);
+        assert_eq!(orders[0].status, "failed");
     }
 }

@@ -1,4 +1,5 @@
 import { Card } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 
 interface Order {
   price: string
@@ -11,15 +12,21 @@ interface OrderBookProps {
   asks: Order[]
   baseAsset: string
   quoteAsset: string
+  onRequestQuote?: (side: 'Buy' | 'Sell') => void
 }
 
-export function OrderBook({ bids, asks, baseAsset, quoteAsset }: OrderBookProps) {
+export function OrderBook({ bids, asks, baseAsset, quoteAsset, onRequestQuote }: OrderBookProps) {
   return (
     <div className="grid lg:grid-cols-2 gap-6" style={{ fontFamily: "var(--font-dm-mono)" }}>
       {/* Bids (Buy Orders) */}
       <Card className="p-6 bg-card border-border">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold text-green-500 mb-1">Bids (Buy Orders)</h2>
+        <div className="mb-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold text-green-500">Bids (Buy Orders)</h2>
+            <Button size="sm" variant="outline" className="border border-border" onClick={() => onRequestQuote?.('Sell')}>
+              Request Sell
+            </Button>
+          </div>
           <p className="text-sm text-muted-foreground">
             Orders to buy {baseAsset} with {quoteAsset}
           </p>
@@ -58,8 +65,13 @@ export function OrderBook({ bids, asks, baseAsset, quoteAsset }: OrderBookProps)
 
       {/* Asks (Sell Orders) */}
       <Card className="p-6 bg-card border-border">
-        <div className="mb-4">
-          <h2 className="text-xl font-semibold text-red-500 mb-1">Asks (Sell Orders)</h2>
+        <div className="mb-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <h2 className="text-xl font-semibold text-red-500">Asks (Sell Orders)</h2>
+            <Button size="sm" variant="outline" className="border border-border" onClick={() => onRequestQuote?.('Buy')}>
+              Request Buy
+            </Button>
+          </div>
           <p className="text-sm text-muted-foreground">
             Orders to sell {baseAsset} for {quoteAsset}
           </p>

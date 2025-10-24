@@ -105,6 +105,9 @@ pub struct ListAccountsRequest {}
 pub struct ListAssetsRequest {}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ListOrdersRequest {}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct RegisterAssetRequest {
     pub symbol: String,
     pub account: String,
@@ -193,6 +196,18 @@ pub struct AssetInfo {
     pub amount: u64,
     /// Whether this is a fungible asset
     pub fungible: bool,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct OrderSummary {
+    pub uuid: String,
+    pub order_type: String,
+    pub order_json: String,
+    pub stage: String,
+    pub status: String,
+    pub account: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
@@ -451,6 +466,41 @@ impl Mosaic {
         };
 
         let content = json_content(&assets, "list_assets response")?;
+
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(description = "List stored orders for the authenticated user")]
+    async fn list_orders(
+        &self,
+        Parameters(_req): Parameters<ListOrdersRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let secret = derive_secret_from_context(&context)?;
+
+        let orders = {
+            let serve = self.serve.lock().await;
+            serve.list_orders_for_user(secret).map_err(|e| {
+                let error_msg = format!("Failed to list orders: {}", e);
+                tracing::error!(error = %error_msg, "Failed to list orders");
+                McpError::internal_error(error_msg, None)
+            })?
+        };
+
+        let summaries: Vec<OrderSummary> = orders
+            .into_iter()
+            .map(|order| OrderSummary {
+                uuid: order.uuid,
+                order_type: order.order_type,
+                order_json: order.order_json,
+                stage: order.stage,
+                status: order.status,
+                account: order.account,
+                created_at: order.created_at,
+            })
+            .collect();
+
+        let content = json_content(&summaries, "list_orders response")?;
 
         Ok(CallToolResult::success(vec![content]))
     }
@@ -1324,7 +1374,7 @@ impl ServerHandler for Mosaic {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("Mosaic MCP server. Available tools: create_client_account, create_desk_account, create_liquidity_account, create_faucet_account, list_accounts, list_assets, register_asset, client_sync, create_order, create_raw_note, get_account_status, consume_note, desk_push_note, get_desk_info, flush, version.".to_string()),
+            instructions: Some("Mosaic MCP server. Available tools: create_client_account, create_desk_account, create_liquidity_account, create_faucet_account, list_accounts, list_assets, list_orders, register_asset, client_sync, create_order, create_raw_note, get_account_status, consume_note, desk_push_note, get_desk_info, flush, version.".to_string()),
         }
     }
 

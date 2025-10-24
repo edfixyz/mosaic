@@ -1,8 +1,9 @@
 use mosaic_fi::note::{MosaicNote, MosaicNoteStatus};
 use mosaic_fi::{AccountType, Market};
 use mosaic_miden::client::ClientHandle;
-use mosaic_miden::store::AssetRecord;
+use mosaic_miden::store::{AssetRecord, OrderRecord};
 use mosaic_miden::{MidenTransactionId, Network};
+use serde_json;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
@@ -18,6 +19,18 @@ pub struct RegistryAsset<'a> {
     pub decimals: u8,
     pub max_supply: Option<&'a str>,
     pub owned: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct StoredOrder {
+    pub uuid: String,
+    pub order_type: String,
+    pub order_json: String,
+    pub stage: String,
+    pub status: String,
+    pub account: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
 }
 
 /// Desk metadata cached in memory
@@ -291,6 +304,28 @@ impl Serve {
         })
     }
 
+    fn order_metadata(order: &mosaic_fi::note::Order) -> (String, Option<String>) {
+        use mosaic_fi::note::Order::*;
+
+        match order {
+            KYCPassed { .. } => ("KYCPassed".to_string(), None),
+            QuoteRequestOffer { uuid, .. } => {
+                ("QuoteRequestOffer".to_string(), Some(uuid.to_string()))
+            }
+            QuoteRequestNoOffer { uuid, .. } => {
+                ("QuoteRequestNoOffer".to_string(), Some(uuid.to_string()))
+            }
+            QuoteRequest { uuid, .. } => ("QuoteRequest".to_string(), Some(uuid.to_string())),
+            LimitOrder { uuid, .. } => ("LimitOrder".to_string(), Some(uuid.to_string())),
+            LiquidityOffer { uuid, .. } => ("LiquidityOffer".to_string(), Some(uuid.to_string())),
+            FundAccount { .. } => ("FundAccount".to_string(), None),
+            LimitBuyOrderLocked => ("LimitBuyOrderLocked".to_string(), None),
+            LimitBuyOrderNotLocked => ("LimitBuyOrderNotLocked".to_string(), None),
+            LimitSellOrderLocked => ("LimitSellOrderLocked".to_string(), None),
+            LimitSellOrderNotLocked => ("LimitSellOrderNotLocked".to_string(), None),
+        }
+    }
+
     fn client_path(&self, secret: [u8; 32], network: Network) -> PathBuf {
         let secret_str = Self::secret_to_string(secret);
         let network_prefix = match network {
@@ -403,6 +438,38 @@ impl Serve {
         }
 
         Ok(assets_map.into_values().collect())
+    }
+
+    pub fn list_orders_for_user(
+        &self,
+        secret: [u8; 32],
+    ) -> Result<Vec<StoredOrder>, Box<dyn std::error::Error>> {
+        let mut orders = Vec::new();
+
+        for network in [Network::Testnet, Network::Localnet] {
+            let client_dir = self.client_path(secret, network);
+            if !client_dir.exists() {
+                continue;
+            }
+
+            let store_path = client_dir.join("mosaic.sqlite3");
+            let store = mosaic_miden::store::Store::new(&store_path)?;
+
+            for order in store.list_orders()? {
+                orders.push(StoredOrder {
+                    uuid: order.uuid,
+                    order_type: order.order_type,
+                    order_json: order.order_json,
+                    stage: order.stage,
+                    status: order.status,
+                    account: order.account,
+                    created_at: order.created_at,
+                });
+            }
+        }
+
+        orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        Ok(orders)
     }
 
     pub fn list_default_assets(&self) -> Vec<RegistryStoredAsset> {
@@ -533,22 +600,66 @@ impl Serve {
             }
         };
 
+        let store_path = self.store_path(secret, network);
+        let store = mosaic_miden::store::Store::new(&store_path)?;
+
         let _account_record = client_handle
             .get_account(account_id)
             .await
             .map_err(|e| anyhow::anyhow!("Failed to get account: {}", e))?
             .ok_or_else(|| anyhow::anyhow!("Account not found: {}", account_id_bech32))?;
 
-        let mut mosaic_note = mosaic_fi::note::compile_note_from_account_id(account_id, order)?;
+        let order_clone = order.clone();
+        let (order_type, uuid_opt) = Self::order_metadata(&order_clone);
+        let generated_uuid = uuid_opt.unwrap_or_else(|| Uuid::new_v4().to_string());
+        let order_json = serde_json::to_string(&order_clone)?;
+
+        let mut order_record = OrderRecord {
+            uuid: generated_uuid.clone(),
+            order_type,
+            order_json,
+            stage: "create".to_string(),
+            status: String::new(),
+            account: account_id_bech32.clone(),
+            created_at: None,
+        };
+
+        let mut mosaic_note = match mosaic_fi::note::compile_note_from_account_id(account_id, order)
+        {
+            Ok(note) => note,
+            Err(err) => {
+                order_record.status = "failed".to_string();
+                let _ = store.upsert_order(&order_record);
+                return Err(err);
+            }
+        };
 
         if commit {
-            let tx_commit_id = client_handle
+            match client_handle
                 .commit_note(account_id, mosaic_note.miden_note.miden_note_hex.clone())
                 .await
-                .map_err(|e| anyhow::anyhow!("Failed to commit note: {}", e))?;
-
-            mosaic_note.status = MosaicNoteStatus::Committed(tx_commit_id);
+            {
+                Ok(tx_commit_id) => {
+                    mosaic_note.status = MosaicNoteStatus::Committed(tx_commit_id);
+                }
+                Err(e) => {
+                    order_record.status = "failed".to_string();
+                    let _ = store.upsert_order(&order_record);
+                    return Err(anyhow::anyhow!("Failed to commit note: {}", e).into());
+                }
+            }
         }
+
+        order_record.status = if commit {
+            match mosaic_note.status {
+                MosaicNoteStatus::Committed(_) => "committed".to_string(),
+                _ => "created".to_string(),
+            }
+        } else {
+            "created".to_string()
+        };
+
+        store.upsert_order(&order_record)?;
 
         Ok(mosaic_note)
     }

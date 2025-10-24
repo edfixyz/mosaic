@@ -128,6 +128,96 @@ export type RegisterAssetResponse = {
   success: boolean
 }
 
+export type StoredOrderSummary = {
+  uuid: string
+  order_type: string
+  order_json: string
+  stage: string
+  status: string
+  account: string
+  created_at?: string | null
+}
+
+export type OrderSide = 'BUY' | 'SELL'
+
+type OrderUuid = string | number
+type OrderAmount = number
+type OrderPrice = number
+
+type QuoteRequestOrder = {
+  QuoteRequest: {
+    market: string
+    uuid: OrderUuid
+    side: OrderSide
+    amount: OrderAmount
+  }
+}
+
+type QuoteRequestOfferOrder = {
+  QuoteRequestOffer: {
+    market: string
+    uuid: OrderUuid
+    side: OrderSide
+    amount: OrderAmount
+    price: OrderPrice
+  }
+}
+
+type QuoteRequestNoOfferOrder = {
+  QuoteRequestNoOffer: {
+    market: string
+    uuid: OrderUuid
+  }
+}
+
+type LimitOrder = {
+  LimitOrder: {
+    market: string
+    uuid: OrderUuid
+    side: OrderSide
+    amount: OrderAmount
+    price: OrderPrice
+  }
+}
+
+type LiquidityOfferOrder = {
+  LiquidityOffer: {
+    market: string
+    uuid: OrderUuid
+    amount: OrderAmount
+    price: OrderPrice
+  }
+}
+
+type FundAccountOrder = {
+  FundAccount: {
+    target_account_id: string
+    amount: OrderAmount
+  }
+}
+
+type KycpassedOrder = {
+  KYCPassed: {
+    market: string
+  }
+}
+
+type OrderUnitVariant =
+  | 'LimitBuyOrderLocked'
+  | 'LimitBuyOrderNotLocked'
+  | 'LimitSellOrderLocked'
+  | 'LimitSellOrderNotLocked'
+
+export type OrderPayload =
+  | KycpassedOrder
+  | QuoteRequestOfferOrder
+  | QuoteRequestNoOfferOrder
+  | QuoteRequestOrder
+  | LimitOrder
+  | LiquidityOfferOrder
+  | FundAccountOrder
+  | OrderUnitVariant
+
 export type ToolDefinitions = {
   create_client_account: {
     args: { network: NetworkName; name?: string }
@@ -162,10 +252,14 @@ export type ToolDefinitions = {
     args: {
       network: NetworkName
       account_id: string
-      order: unknown
+      order: OrderPayload
       commit?: boolean
     }
     result: CreateOrderResponse
+  }
+  list_orders: {
+    args: EmptyArgs
+    result: StoredOrderSummary[]
   }
   create_raw_note: {
     args: {
