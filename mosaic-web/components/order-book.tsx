@@ -28,6 +28,9 @@ export function OrderBook({
   onRequestQuote,
   onOfferLiquidity,
 }: OrderBookProps) {
+  const maxBidAmount = bids.reduce((max, bid) => Math.max(max, Number(bid.amount) || 0), 0)
+  const maxAskAmount = asks.reduce((max, ask) => Math.max(max, Number(ask.amount) || 0), 0)
+
   return (
     <div className="grid lg:grid-cols-2 gap-6" style={{ fontFamily: "var(--font-dm-mono)" }}>
       {/* Bids (Buy Orders) */}
@@ -78,17 +81,25 @@ export function OrderBook({
                 No buy orders available
               </div>
             ) : (
-              bids.map((bid, index) => (
-                <div
-                  key={index}
-                  className="grid grid-cols-3 gap-4 py-2 hover:bg-secondary/50 rounded transition-colors relative overflow-hidden"
-                >
-                  <div className="absolute inset-0 bg-green-500/10" style={{ width: `${Math.random() * 60 + 20}%` }} />
-                  <div className="relative text-green-500 font-mono text-sm">{bid.price}</div>
-                  <div className="relative text-right text-foreground font-mono text-sm">{bid.amount}</div>
-                  <div className="relative text-right text-muted-foreground font-mono text-sm">{bid.total}</div>
-                </div>
-              ))
+              bids.map((bid, index) => {
+                const amountValue = Number(bid.amount) || 0
+                const fillPercent = maxBidAmount > 0 ? Math.min((amountValue / maxBidAmount) * 100, 100) : 0
+
+                return (
+                  <div
+                    key={index}
+                    className="grid grid-cols-3 gap-4 py-2 hover:bg-secondary/50 rounded transition-colors relative overflow-hidden"
+                  >
+                    <div
+                      className="absolute inset-y-0 left-0 bg-green-500/10"
+                      style={{ width: `${fillPercent}%` }}
+                    />
+                    <div className="relative text-green-500 font-mono text-sm">{bid.price}</div>
+                    <div className="relative text-right text-foreground font-mono text-sm">{bid.amount}</div>
+                    <div className="relative text-right text-muted-foreground font-mono text-sm">{bid.total}</div>
+                  </div>
+                )
+              })
             )}
           </div>
         </div>
@@ -142,17 +153,25 @@ export function OrderBook({
                 No sell orders available
               </div>
             ) : (
-              asks.map((ask, index) => (
-                <div
-                  key={index}
-                  className="grid grid-cols-3 gap-4 py-2 hover:bg-secondary/50 rounded transition-colors relative overflow-hidden"
-                >
-                  <div className="absolute inset-0 bg-red-500/10" style={{ width: `${Math.random() * 60 + 20}%` }} />
-                  <div className="relative text-red-500 font-mono text-sm">{ask.price}</div>
-                  <div className="relative text-right text-foreground font-mono text-sm">{ask.amount}</div>
-                  <div className="relative text-right text-muted-foreground font-mono text-sm">{ask.total}</div>
-                </div>
-              ))
+              asks.map((ask, index) => {
+                const amountValue = Number(ask.amount) || 0
+                const fillPercent = maxAskAmount > 0 ? Math.min((amountValue / maxAskAmount) * 100, 100) : 0
+
+                return (
+                  <div
+                    key={index}
+                    className="grid grid-cols-3 gap-4 py-2 hover:bg-secondary/50 rounded transition-colors relative overflow-hidden"
+                  >
+                    <div
+                      className="absolute inset-y-0 left-0 bg-red-500/10"
+                      style={{ width: `${fillPercent}%` }}
+                    />
+                    <div className="relative text-red-500 font-mono text-sm">{ask.price}</div>
+                    <div className="relative text-right text-foreground font-mono text-sm">{ask.amount}</div>
+                    <div className="relative text-right text-muted-foreground font-mono text-sm">{ask.total}</div>
+                  </div>
+                )
+              })
             )}
           </div>
         </div>
