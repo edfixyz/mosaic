@@ -12,20 +12,51 @@ interface OrderBookProps {
   asks: Order[]
   baseAsset: string
   quoteAsset: string
+  canRequestQuote?: boolean
+  canOfferLiquidity?: boolean
   onRequestQuote?: (side: 'Buy' | 'Sell') => void
+  onOfferLiquidity?: (side: 'Buy' | 'Sell') => void
 }
 
-export function OrderBook({ bids, asks, baseAsset, quoteAsset, onRequestQuote }: OrderBookProps) {
+export function OrderBook({
+  bids,
+  asks,
+  baseAsset,
+  quoteAsset,
+  canRequestQuote = false,
+  canOfferLiquidity = false,
+  onRequestQuote,
+  onOfferLiquidity,
+}: OrderBookProps) {
   return (
     <div className="grid lg:grid-cols-2 gap-6" style={{ fontFamily: "var(--font-dm-mono)" }}>
       {/* Bids (Buy Orders) */}
       <Card className="p-6 bg-card border-border">
         <div className="mb-4 space-y-2">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <h2 className="text-xl font-semibold text-green-500">Bids (Buy Orders)</h2>
-            <Button size="sm" variant="outline" className="border border-border" onClick={() => onRequestQuote?.('Sell')}>
-              Request Sell
-            </Button>
+            <div className="flex items-center gap-2">
+              {canOfferLiquidity && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border border-border"
+                  onClick={() => onOfferLiquidity?.('Sell')}
+                >
+                  Offer Liquidity
+                </Button>
+              )}
+              {canRequestQuote && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border border-border"
+                  onClick={() => onRequestQuote?.('Sell')}
+                >
+                  Request Quote
+                </Button>
+              )}
+            </div>
           </div>
           <p className="text-sm text-muted-foreground">
             Orders to buy {baseAsset} with {quoteAsset}
@@ -66,11 +97,30 @@ export function OrderBook({ bids, asks, baseAsset, quoteAsset, onRequestQuote }:
       {/* Asks (Sell Orders) */}
       <Card className="p-6 bg-card border-border">
         <div className="mb-4 space-y-2">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <h2 className="text-xl font-semibold text-red-500">Asks (Sell Orders)</h2>
-            <Button size="sm" variant="outline" className="border border-border" onClick={() => onRequestQuote?.('Buy')}>
-              Request Buy
-            </Button>
+            <div className="flex items-center gap-2">
+              {canOfferLiquidity && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border border-border"
+                  onClick={() => onOfferLiquidity?.('Buy')}
+                >
+                  Offer Liquidity
+                </Button>
+              )}
+              {canRequestQuote && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="border border-border"
+                  onClick={() => onRequestQuote?.('Buy')}
+                >
+                  Request Quote
+                </Button>
+              )}
+            </div>
           </div>
           <p className="text-sm text-muted-foreground">
             Orders to sell {baseAsset} for {quoteAsset}

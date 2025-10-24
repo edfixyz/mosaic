@@ -211,6 +211,20 @@ pub struct OrderSummary {
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct RoleSettingsSummary {
+    pub is_client: bool,
+    pub is_liquidity_provider: bool,
+    pub is_desk: bool,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UpdateRoleSettingsRequest {
+    pub is_client: bool,
+    pub is_liquidity_provider: bool,
+    pub is_desk: bool,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct AccountStatus {
     /// Account ID in bech32 format
     pub account_id: String,
@@ -501,6 +515,71 @@ impl Mosaic {
             .collect();
 
         let content = json_content(&summaries, "list_orders response")?;
+
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(description = "Get role settings for the authenticated user")]
+    async fn get_role_settings(
+        &self,
+        Parameters(_req): Parameters<ListOrdersRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let secret = derive_secret_from_context(&context)?;
+
+        let settings = {
+            let serve = self.serve.lock().await;
+            serve.get_role_settings(secret).map_err(|e| {
+                let error_msg = format!("Failed to load role settings: {}", e);
+                tracing::error!(error = %error_msg, "Failed to load role settings");
+                McpError::internal_error(error_msg, None)
+            })?
+        };
+
+        let summary = RoleSettingsSummary {
+            is_client: settings.is_client,
+            is_liquidity_provider: settings.is_liquidity_provider,
+            is_desk: settings.is_desk,
+        };
+
+        let content = json_content(&summary, "get_role_settings response")?;
+
+        Ok(CallToolResult::success(vec![content]))
+    }
+
+    #[tool(description = "Update role settings for the authenticated user")]
+    async fn update_role_settings(
+        &self,
+        Parameters(req): Parameters<UpdateRoleSettingsRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, McpError> {
+        let secret = derive_secret_from_context(&context)?;
+
+        {
+            let serve = self.serve.lock().await;
+            serve
+                .update_role_settings(
+                    secret,
+                    mosaic_serve::RoleSettings {
+                        is_client: req.is_client,
+                        is_liquidity_provider: req.is_liquidity_provider,
+                        is_desk: req.is_desk,
+                    },
+                )
+                .map_err(|e| {
+                    let error_msg = format!("Failed to update role settings: {}", e);
+                    tracing::error!(error = %error_msg, "Failed to update role settings");
+                    McpError::internal_error(error_msg, None)
+                })?;
+        }
+
+        let response = RoleSettingsSummary {
+            is_client: req.is_client,
+            is_liquidity_provider: req.is_liquidity_provider,
+            is_desk: req.is_desk,
+        };
+
+        let content = json_content(&response, "update_role_settings response")?;
 
         Ok(CallToolResult::success(vec![content]))
     }
@@ -1374,7 +1453,7 @@ impl ServerHandler for Mosaic {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("Mosaic MCP server. Available tools: create_client_account, create_desk_account, create_liquidity_account, create_faucet_account, list_accounts, list_assets, list_orders, register_asset, client_sync, create_order, create_raw_note, get_account_status, consume_note, desk_push_note, get_desk_info, flush, version.".to_string()),
+            instructions: Some("Mosaic MCP server. Available tools: create_client_account, create_desk_account, create_liquidity_account, create_faucet_account, list_accounts, list_assets, list_orders, get_role_settings, update_role_settings, register_asset, client_sync, create_order, create_raw_note, get_account_status, consume_note, desk_push_note, get_desk_info, flush, version.".to_string()),
         }
     }
 

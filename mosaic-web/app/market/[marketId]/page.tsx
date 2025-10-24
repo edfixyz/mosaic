@@ -19,7 +19,7 @@ import { TrendingUp, TrendingDown, Loader2 } from 'lucide-react'
 import { use, useCallback, useEffect, useMemo, useState } from 'react'
 import { getOrImportAccount, getDeskInfo } from '@/lib/account'
 import { marketStorage } from '@/lib/marketStorage'
-import { callMcpTool, OrderPayload, StoredOrderSummary } from '@/lib/mcp-tool'
+import { callMcpTool, OrderPayload, RoleSettings, StoredOrderSummary } from '@/lib/mcp-tool'
 import type { AccountInfo, NetworkName } from '@/lib/mcp-tool'
 
 const defaultMarket = { price: 1000, change: '+0.00%', positive: true, volume: '$0' }
@@ -108,6 +108,14 @@ export default function MarketPage({
   const [accessToken, setAccessToken] = useState<string | null>(null)
   const [submittingRequest, setSubmittingRequest] = useState(false)
   const [requestError, setRequestError] = useState<string | null>(null)
+  const [roleSettings, setRoleSettings] = useState<RoleSettings | null>(null)
+  const [rolesError, setRolesError] = useState<string | null>(null)
+  const [liquidityModalOpen, setLiquidityModalOpen] = useState(false)
+  const [liquiditySide, setLiquiditySide] = useState<'Buy' | 'Sell'>('Buy')
+  const [liquidityAmount, setLiquidityAmount] = useState('')
+  const [liquidityPrice, setLiquidityPrice] = useState('')
+  const [liquidityError, setLiquidityError] = useState<string | null>(null)
+  const [liquiditySubmitting, setLiquiditySubmitting] = useState(false)
 
   const market = defaultMarket
 
@@ -175,6 +183,21 @@ export default function MarketPage({
         setOrders([])
       } finally {
         setOrdersLoading(false)
+      }
+    },
+    []
+  )
+
+  const loadRoleSettings = useCallback(
+    async (token: string) => {
+      setRolesError(null)
+      try {
+        const settings = await callMcpTool('get_role_settings', {}, token)
+        setRoleSettings(settings)
+      } catch (err) {
+        console.error('Failed to load role settings', err)
+        setRolesError('Unable to load role settings')
+        setRoleSettings(null)
       }
     },
     []
@@ -254,6 +277,30 @@ export default function MarketPage({
     }
   }
 
+  const openLiquidityModal = (side: 'Buy' | 'Sell') => {
+    setLiquiditySide(side)
+    setLiquidityAmount('')
+    setLiquidityPrice('')
+    setLiquidityError(null)
+    setLiquidityModalOpen(true)
+  }
+
+  const resetLiquidityState = () => {
+    setLiquiditySide('Buy')
+    setLiquidityAmount('')
+    setLiquidityPrice('')
+    setLiquidityError(null)
+  }
+
+  const handleCloseLiquidityModal = (open: boolean) => {
+    if (!open) {
+      setLiquidityModalOpen(false)
+      resetLiquidityState()
+    } else {
+      setLiquidityModalOpen(true)
+    }
+  }
+
   const handleSubmitRequest = async () => {
     setRequestError(null)
 
@@ -321,6 +368,85 @@ export default function MarketPage({
       }
     } finally {
       setSubmittingRequest(false)
+    }
+  }
+
+  const handleSubmitLiquidity = async () => {
+    setLiquidityError(null)
+
+    if (!selectedAccount) {
+      setLiquidityError('Select an account to continue')
+      return
+    }
+
+    const targetAccount = clientAccounts.find((account) => account.accountId === selectedAccount)
+    if (!targetAccount) {
+      setLiquidityError('The selected account is no longer available')
+      return
+    }
+
+    const amountValue = Number(liquidityAmount)
+    if (!Number.isFinite(amountValue) || amountValue <= 0) {
+      setLiquidityError('Amount must be greater than zero')
+      return
+    }
+
+    const priceValue = Number(liquidityPrice)
+    if (!Number.isFinite(priceValue) || priceValue <= 0) {
+      setLiquidityError('Price must be greater than zero')
+      return
+    }
+
+    const roundedAmount = Math.round(amountValue)
+    const roundedPrice = Math.round(priceValue)
+
+    const orderPayload: OrderPayload = {
+      LiquidityOffer: {
+        market: base && quote ? `${base}/${quote}` : marketId,
+        uuid: Math.floor(Math.random() * 1_000_000_000_000),
+        side: liquiditySide === 'Buy' ? 'BUY' : 'SELL',
+        amount: roundedAmount,
+        price: roundedPrice,
+      },
+    }
+
+    setLiquiditySubmitting(true)
+
+    let token = accessToken
+    try {
+      if (!token) {
+        token = await fetchAccessToken()
+        if (!token) {
+          throw new Error('You must be logged in to submit an offer')
+        }
+        setAccessToken(token)
+      }
+
+      await callMcpTool(
+        'create_order',
+        {
+          network: targetAccount.network,
+          account_id: targetAccount.accountId,
+          order: orderPayload,
+          commit: true,
+        },
+        token
+      )
+
+      await loadOrders(token)
+      setLiquidityModalOpen(false)
+      resetLiquidityState()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to submit liquidity offer'
+      setLiquidityError(message)
+
+      if (token) {
+        await loadOrders(token).catch((loadErr) => {
+          console.warn('Failed to refresh orders after error', loadErr)
+        })
+      }
+    } finally {
+      setLiquiditySubmitting(false)
     }
   }
 
@@ -406,15 +532,17 @@ export default function MarketPage({
         setClientAccounts([])
         setOrders([])
         setSelectedAccount('')
+        setRoleSettings(null)
         return
       }
 
       await loadAccounts(token)
       await loadOrders(token)
+      await loadRoleSettings(token)
     }
 
     void initialise()
-  }, [fetchAccessToken, loadAccounts, loadOrders, marketId])
+  }, [fetchAccessToken, loadAccounts, loadOrders, loadRoleSettings, marketId])
 
   const marketSymbol = useMemo(() => {
     if (base && quote) {
@@ -436,6 +564,19 @@ export default function MarketPage({
         return details.market ? details.market === marketSymbol : true
       })
   }, [orders, marketSymbol, parseOrderSummary])
+
+  const accountNameById = useMemo(() => {
+    const map = new Map<string, string>()
+    clientAccounts.forEach((account) => {
+      if (account.accountId) {
+        map.set(account.accountId, account.name ?? account.accountId)
+      }
+    })
+    return map
+  }, [clientAccounts])
+
+  const canRequestQuote = roleSettings?.is_client ?? false
+  const canOfferLiquidity = roleSettings?.is_liquidity_provider ?? false
 
   return (
     <div className="min-h-screen p-8">
@@ -530,12 +671,16 @@ export default function MarketPage({
       </div>
 
       {!loading && !error && (
-        <Card className="mb-8 bg-card border-border">
-          <div className="flex items-center justify-between mb-4">
+        <Card className={`mb-8 bg-card border-border ${canRequestQuote || canOfferLiquidity ? 'p-6' : 'p-4'}`}>
+          <div className={`flex items-center justify-between ${canRequestQuote || canOfferLiquidity ? 'mb-6' : 'mb-3'}`}>
             <h2 className="text-xl font-semibold text-foreground">Quotes &amp; Orders</h2>
             {ordersLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
           </div>
-          {ordersError ? (
+          {(!accessToken || clientAccounts.length === 0) && !canRequestQuote && !canOfferLiquidity ? (
+            <p className="text-sm text-muted-foreground">Connect with Mosaic to place orders.</p>
+          ) : rolesError ? (
+            <p className="text-sm text-destructive">{rolesError}</p>
+          ) : ordersError ? (
             <p className="text-sm text-destructive">{ordersError}</p>
           ) : ordersForMarket.length === 0 ? (
             <p className="text-sm text-muted-foreground">No orders yet.</p>
@@ -570,6 +715,7 @@ export default function MarketPage({
                   const createdLabel = order.created_at
                     ? new Date(order.created_at).toLocaleString()
                     : '-'
+                  const accountLabel = accountNameById.get(order.account) ?? order.account
 
                   return (
                     <div
@@ -580,7 +726,7 @@ export default function MarketPage({
                       <span className="uppercase text-primary">{sideLabel || '-'}</span>
                       <span className="text-foreground">{amountLabel}</span>
                       <span className="text-foreground capitalize">{stageLabel}</span>
-                      <span className="truncate text-muted-foreground">{order.account}</span>
+                      <span className="truncate text-muted-foreground">{accountLabel}</span>
                       <span className="text-muted-foreground">{createdLabel}</span>
                     </div>
                   )
@@ -598,7 +744,10 @@ export default function MarketPage({
           asks={asks}
           baseAsset={base}
           quoteAsset={quote}
+          canRequestQuote={canRequestQuote}
+          canOfferLiquidity={canOfferLiquidity}
           onRequestQuote={openRequestModal}
+          onOfferLiquidity={openLiquidityModal}
         />
       )}
 
@@ -714,6 +863,119 @@ export default function MarketPage({
             >
               {submittingRequest && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Submit Request
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={liquidityModalOpen} onOpenChange={handleCloseLiquidityModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Offer Liquidity ({liquiditySide})</DialogTitle>
+            <DialogDescription>
+              Provide a liquidity offer for {base}/{quote}. Offers require an account and a price.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="grid gap-2">
+              <Label htmlFor="liquidity-account">Client Account</Label>
+              <Select
+                value={selectedAccount}
+                onValueChange={setSelectedAccount}
+                disabled={accountsLoading || clientAccounts.length === 0 || liquiditySubmitting}
+              >
+                <SelectTrigger id="liquidity-account">
+                  <SelectValue
+                    placeholder={
+                      accountsLoading
+                        ? 'Loading accounts...'
+                        : clientAccounts.length === 0
+                          ? 'No client accounts found'
+                          : 'Select account'
+                    }
+                  />
+                </SelectTrigger>
+                <SelectContent>
+                  {clientAccounts.map((account) => (
+                    <SelectItem key={account.accountId} value={account.accountId}>
+                      {account.name ?? account.accountId}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="grid gap-2">
+              <Label>Side</Label>
+              <div className="flex gap-2">
+                <Button
+                  type="button"
+                  variant={liquiditySide === 'Buy' ? 'default' : 'outline'}
+                  onClick={() => setLiquiditySide('Buy')}
+                  disabled={liquiditySubmitting}
+                  className="flex-1"
+                >
+                  Buy
+                </Button>
+                <Button
+                  type="button"
+                  variant={liquiditySide === 'Sell' ? 'default' : 'outline'}
+                  onClick={() => setLiquiditySide('Sell')}
+                  disabled={liquiditySubmitting}
+                  className="flex-1"
+                >
+                  Sell
+                </Button>
+              </div>
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="liquidity-amount">Amount ({base || 'Base'})</Label>
+              <Input
+                id="liquidity-amount"
+                type="number"
+                min="0"
+                placeholder="0.0"
+                value={liquidityAmount}
+                onChange={(event) => setLiquidityAmount(event.target.value)}
+                disabled={liquiditySubmitting}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="liquidity-price">Price ({quote || 'Quote'})</Label>
+              <Input
+                id="liquidity-price"
+                type="number"
+                min="0"
+                placeholder="0.0"
+                value={liquidityPrice}
+                onChange={(event) => setLiquidityPrice(event.target.value)}
+                disabled={liquiditySubmitting}
+              />
+            </div>
+            {liquidityError && (
+              <p className="text-sm text-destructive">{liquidityError}</p>
+            )}
+          </div>
+          <DialogFooter className="flex gap-2">
+            <Button
+              variant="outline"
+              onClick={() => handleCloseLiquidityModal(false)}
+              disabled={liquiditySubmitting}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleSubmitLiquidity}
+              disabled={
+                liquiditySubmitting ||
+                !selectedAccount ||
+                !liquidityAmount ||
+                Number(liquidityAmount) <= 0 ||
+                !liquidityPrice ||
+                Number(liquidityPrice) <= 0
+              }
+            >
+              {liquiditySubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Submit Offer
             </Button>
           </DialogFooter>
         </DialogContent>

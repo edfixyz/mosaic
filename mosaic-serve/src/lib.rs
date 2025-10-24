@@ -1,7 +1,7 @@
 use mosaic_fi::note::{MosaicNote, MosaicNoteStatus};
 use mosaic_fi::{AccountType, Market};
 use mosaic_miden::client::ClientHandle;
-use mosaic_miden::store::{AssetRecord, OrderRecord};
+use mosaic_miden::store::{AssetRecord, OrderRecord, SettingsRecord};
 use mosaic_miden::{MidenTransactionId, Network};
 use serde_json;
 use std::collections::HashMap;
@@ -31,6 +31,13 @@ pub struct StoredOrder {
     pub account: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct RoleSettings {
+    pub is_client: bool,
+    pub is_liquidity_provider: bool,
+    pub is_desk: bool,
 }
 
 /// Desk metadata cached in memory
@@ -470,6 +477,48 @@ impl Serve {
 
         orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
         Ok(orders)
+    }
+
+    pub fn get_role_settings(
+        &self,
+        secret: [u8; 32],
+    ) -> Result<RoleSettings, Box<dyn std::error::Error>> {
+        let client_dir = self.client_path(secret, Network::Testnet);
+        let store_path = client_dir.join("mosaic.sqlite3");
+        let store = mosaic_miden::store::Store::new(&store_path)?;
+
+        let settings = store.get_settings()?;
+        Ok(RoleSettings {
+            is_client: settings.is_client,
+            is_liquidity_provider: settings.is_liquidity_provider,
+            is_desk: settings.is_desk,
+        })
+    }
+
+    pub fn update_role_settings(
+        &self,
+        secret: [u8; 32],
+        settings: RoleSettings,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let client_dir = self.client_path(secret, Network::Testnet);
+        Self::check_or_create(&client_dir)?;
+        let store_path = client_dir.join("mosaic.sqlite3");
+        let store = match mosaic_miden::store::Store::new(&store_path) {
+            Ok(store) => store,
+            Err(_) => {
+                Self::check_or_create(&client_dir)
+                    .map_err(|e| anyhow::anyhow!("Failed to initialise client directory: {}", e))?;
+                mosaic_miden::store::Store::new(&store_path)?
+            }
+        };
+
+        let record = SettingsRecord {
+            is_client: settings.is_client,
+            is_liquidity_provider: settings.is_liquidity_provider,
+            is_desk: settings.is_desk,
+        };
+        store.update_settings(&record)?;
+        Ok(())
     }
 
     pub fn list_default_assets(&self) -> Vec<RegistryStoredAsset> {

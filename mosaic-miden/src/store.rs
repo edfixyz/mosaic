@@ -30,6 +30,13 @@ pub struct OrderRecord {
     pub created_at: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct SettingsRecord {
+    pub is_client: bool,
+    pub is_liquidity_provider: bool,
+    pub is_desk: bool,
+}
+
 impl Store {
     /// Create or open a store at the given path
     pub fn new<P: AsRef<Path>>(path: P) -> SqliteResult<Self> {
@@ -242,6 +249,46 @@ impl Store {
 
         Ok(orders)
     }
+
+    pub fn get_settings(&self) -> SqliteResult<SettingsRecord> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT is_client, is_liquidity_provider, is_desk FROM settings LIMIT 1")?;
+
+        let settings = stmt
+            .query_row([], |row| {
+                Ok(SettingsRecord {
+                    is_client: row.get::<_, i64>(0)? != 0,
+                    is_liquidity_provider: row.get::<_, i64>(1)? != 0,
+                    is_desk: row.get::<_, i64>(2)? != 0,
+                })
+            })
+            .optional()?;
+
+        Ok(settings.unwrap_or(SettingsRecord {
+            is_client: false,
+            is_liquidity_provider: false,
+            is_desk: false,
+        }))
+    }
+
+    pub fn update_settings(&self, settings: &SettingsRecord) -> SqliteResult<()> {
+        self.conn.execute(
+            "INSERT INTO settings (id, is_client, is_liquidity_provider, is_desk)
+             VALUES (1, ?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET
+                is_client = excluded.is_client,
+                is_liquidity_provider = excluded.is_liquidity_provider,
+                is_desk = excluded.is_desk",
+            params![
+                if settings.is_client { 1 } else { 0 },
+                if settings.is_liquidity_provider { 1 } else { 0 },
+                if settings.is_desk { 1 } else { 0 },
+            ],
+        )?;
+
+        Ok(())
+    }
 }
 
 fn ensure_schema(conn: &mut Connection) -> SqliteResult<()> {
@@ -249,6 +296,7 @@ fn ensure_schema(conn: &mut Connection) -> SqliteResult<()> {
     ensure_accounts_table(&tx)?;
     ensure_assets_table(&tx)?;
     ensure_orders_table(&tx)?;
+    ensure_settings_table(&tx)?;
     tx.commit()
 }
 
@@ -355,6 +403,26 @@ fn assets_has_foreign_key(conn: &Connection) -> SqliteResult<bool> {
     let mut stmt = conn.prepare("PRAGMA foreign_key_list(assets)")?;
     let mut rows = stmt.query([])?;
     Ok(rows.next()?.is_some())
+}
+
+fn ensure_settings_table(conn: &Connection) -> SqliteResult<()> {
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            is_client INTEGER NOT NULL DEFAULT 0,
+            is_liquidity_provider INTEGER NOT NULL DEFAULT 0,
+            is_desk INTEGER NOT NULL DEFAULT 0
+        )",
+        [],
+    )?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO settings (id, is_client, is_liquidity_provider, is_desk)
+         VALUES (1, 0, 0, 0)",
+        [],
+    )?;
+
+    Ok(())
 }
 
 fn ensure_orders_table(conn: &Connection) -> SqliteResult<()> {
@@ -511,5 +579,28 @@ mod tests {
         let orders = store.list_orders().unwrap();
         assert_eq!(orders.len(), 1);
         assert_eq!(orders[0].status, "failed");
+    }
+
+    #[test]
+    fn test_settings_operations() {
+        let store = Store::new(":memory:").unwrap();
+
+        let defaults = store.get_settings().unwrap();
+        assert!(!defaults.is_client);
+        assert!(!defaults.is_liquidity_provider);
+        assert!(!defaults.is_desk);
+
+        let new_settings = SettingsRecord {
+            is_client: true,
+            is_liquidity_provider: true,
+            is_desk: false,
+        };
+
+        store.update_settings(&new_settings).unwrap();
+
+        let stored = store.get_settings().unwrap();
+        assert!(stored.is_client);
+        assert!(stored.is_liquidity_provider);
+        assert!(!stored.is_desk);
     }
 }

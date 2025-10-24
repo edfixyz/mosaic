@@ -138,6 +138,12 @@ export type StoredOrderSummary = {
   created_at?: string | null
 }
 
+export type RoleSettings = {
+  is_client: boolean
+  is_liquidity_provider: boolean
+  is_desk: boolean
+}
+
 export type OrderSide = 'BUY' | 'SELL'
 
 type OrderUuid = string | number
@@ -184,6 +190,7 @@ type LiquidityOfferOrder = {
   LiquidityOffer: {
     market: string
     uuid: OrderUuid
+    side: OrderSide
     amount: OrderAmount
     price: OrderPrice
   }
@@ -260,6 +267,14 @@ export type ToolDefinitions = {
   list_orders: {
     args: EmptyArgs
     result: StoredOrderSummary[]
+  }
+  get_role_settings: {
+    args: EmptyArgs
+    result: RoleSettings
+  }
+  update_role_settings: {
+    args: RoleSettings
+    result: RoleSettings
   }
   create_raw_note: {
     args: {

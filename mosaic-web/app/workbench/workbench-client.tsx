@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -16,7 +16,7 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { AssetSummary, callMcpTool, NetworkName } from '@/lib/mcp-tool'
+import { AssetSummary, RoleSettings, callMcpTool, NetworkName } from '@/lib/mcp-tool'
 import { formatAssetSupply } from '@/lib/asset-format'
 import { Coins, AlertCircle, Plus, Loader2, Wallet } from 'lucide-react'
 import clsx from 'clsx'
@@ -57,6 +57,52 @@ export function WorkbenchClient() {
   const [addSymbol, setAddSymbol] = useState('')
   const [addAccount, setAddAccount] = useState('')
   const [addDecimals, setAddDecimals] = useState('0')
+
+  const [roleSettings, setRoleSettings] = useState<RoleSettings | null>(null)
+  const [roleDraft, setRoleDraft] = useState<RoleSettings | null>(null)
+  const [rolesLoading, setRolesLoading] = useState(false)
+  const [rolesError, setRolesError] = useState<string | null>(null)
+  const [savingRoles, setSavingRoles] = useState(false)
+
+  const toggleRoleDraft = (key: keyof RoleSettings) => {
+    setRoleDraft((current) =>
+      current
+        ? {
+          ...current,
+          [key]: !current[key],
+        }
+        : current
+    )
+  }
+
+  const handleSaveRoles = async () => {
+    if (!roleDraft) return
+
+    setSavingRoles(true)
+    setRolesError(null)
+
+    try {
+      const tokenResponse = await fetch('/api/auth/token')
+      if (!tokenResponse.ok) {
+        throw new Error('You must be logged in to update roles')
+      }
+
+      const { accessToken } = await tokenResponse.json()
+      if (!accessToken) {
+        throw new Error('Missing access token')
+      }
+
+      const updated = await callMcpTool('update_role_settings', roleDraft, accessToken)
+      setRoleSettings(updated)
+      setRoleDraft(updated)
+      setNotification({ type: 'success', message: 'Roles updated successfully' })
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to update roles'
+      setRolesError(message)
+    } finally {
+      setSavingRoles(false)
+    }
+  }
 
   const [notification, setNotification] = useState<
     | {
@@ -157,6 +203,51 @@ export function WorkbenchClient() {
   useEffect(() => {
     void loadAssets()
   }, [])
+
+  const loadRoleSettings = useCallback(async () => {
+    setRolesLoading(true)
+    setRolesError(null)
+
+    try {
+      const tokenResponse = await fetch('/api/auth/token')
+      if (!tokenResponse.ok) {
+        setRoleSettings(null)
+        setRoleDraft(null)
+        return
+      }
+
+      const { accessToken } = await tokenResponse.json()
+      if (!accessToken) {
+        setRoleSettings(null)
+        setRoleDraft(null)
+        return
+      }
+
+      const settings = await callMcpTool('get_role_settings', {}, accessToken)
+      setRoleSettings(settings)
+      setRoleDraft(settings)
+    } catch (err) {
+      console.error('Failed to load role settings', err)
+      setRolesError('Unable to load role settings')
+      setRoleSettings(null)
+      setRoleDraft(null)
+    } finally {
+      setRolesLoading(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadRoleSettings()
+  }, [loadRoleSettings])
+
+  const rolesChanged = useMemo(() => {
+    if (!roleSettings || !roleDraft) return false
+    return (
+      roleSettings.is_client !== roleDraft.is_client ||
+      roleSettings.is_liquidity_provider !== roleDraft.is_liquidity_provider ||
+      roleSettings.is_desk !== roleDraft.is_desk
+    )
+  }, [roleSettings, roleDraft])
 
   const handleCreateClientAccount = async () => {
     const trimmedName = accountName.trim()
@@ -344,6 +435,97 @@ export function WorkbenchClient() {
           <p className="text-sm font-medium">{notification.message}</p>
         </div>
       )}
+
+      <section>
+        <Card className="p-6 bg-card border-border">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-2xl font-semibold text-foreground">Role Settings</h2>
+              <p className="text-sm text-muted-foreground">
+                Choose the roles you want to enable for this workspace.
+              </p>
+            </div>
+            <Button
+              onClick={handleSaveRoles}
+              disabled={
+                !roleDraft || rolesLoading || savingRoles || !rolesChanged
+              }
+            >
+              {savingRoles && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+              Save Roles
+            </Button>
+          </div>
+
+          {rolesLoading && (
+            <p className="mt-4 text-sm text-muted-foreground flex items-center gap-2">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading role settings...
+            </p>
+          )}
+
+          {rolesError && (
+            <p className="mt-4 text-sm text-destructive">{rolesError}</p>
+          )}
+
+          {!rolesLoading && !roleDraft && !rolesError && (
+            <p className="mt-4 text-sm text-muted-foreground">
+              Sign in to configure your role preferences.
+            </p>
+          )}
+
+          {roleDraft && (
+            <div className="mt-6 grid gap-4 md:grid-cols-3">
+              <label className="flex items-start gap-3 rounded-lg border border-border/60 bg-muted/30 p-4 hover:border-primary transition-colors">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4"
+                  checked={roleDraft.is_client}
+                  onChange={() => toggleRoleDraft('is_client')}
+                  disabled={rolesLoading || savingRoles}
+                />
+                <div>
+                  <p className="font-semibold text-foreground">Client</p>
+                  <p className="text-sm text-muted-foreground">
+                    Access OTC markets and manage client accounts.
+                  </p>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 rounded-lg border border-border/60 bg-muted/30 p-4 hover:border-primary transition-colors">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4"
+                  checked={roleDraft.is_liquidity_provider}
+                  onChange={() => toggleRoleDraft('is_liquidity_provider')}
+                  disabled={rolesLoading || savingRoles}
+                />
+                <div>
+                  <p className="font-semibold text-foreground">Liquidity Provider</p>
+                  <p className="text-sm text-muted-foreground">
+                    Provide quotes and manage liquidity offers for markets.
+                  </p>
+                </div>
+              </label>
+
+              <label className="flex items-start gap-3 rounded-lg border border-border/60 bg-muted/30 p-4 hover:border-primary transition-colors">
+                <input
+                  type="checkbox"
+                  className="mt-1 h-4 w-4"
+                  checked={roleDraft.is_desk}
+                  onChange={() => toggleRoleDraft('is_desk')}
+                  disabled={rolesLoading || savingRoles}
+                />
+                <div>
+                  <p className="font-semibold text-foreground">Desk Manager</p>
+                  <p className="text-sm text-muted-foreground">
+                    Manage markets, desks, and oversee trading activity.
+                  </p>
+                </div>
+              </label>
+            </div>
+          )}
+        </Card>
+      </section>
 
       <section>
         <div className="mb-6 flex items-center justify-between">
