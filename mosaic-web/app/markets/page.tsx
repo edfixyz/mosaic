@@ -63,16 +63,22 @@ const markets = [
 export default function MarketsPage() {
   return (
     <div className="min-h-screen p-8">
-      <div className="mb-8">
-        <h1 className="text-4xl font-serif mb-2 text-primary" style={{ fontFamily: "var(--font-playfair)" }}>
+      <div className="mb-12 text-center space-y-3">
+        <h1 className="text-4xl font-serif text-primary" style={{ fontFamily: "var(--font-playfair)" }}>
           Markets
         </h1>
-        <p className="text-muted-foreground">Active trading pairs on the Mosaic OTC desk</p>
+        <p className="text-3xl font-semibold text-foreground/80">Coming Soon</p>
+        <p className="max-w-2xl mx-auto text-base text-muted-foreground">
+          We&apos;re crafting a new way to explore Mosaic&apos;s OTC markets. Check back soon for curated trading
+          opportunities and liquidity programs tailored for professional participants.
+        </p>
       </div>
-
-      <div className="grid md:grid-cols-2 gap-4" style={{ fontFamily: "var(--font-dm-mono)" }}>
+      <div
+        className="grid md:grid-cols-2 gap-4 blur-sm opacity-60 pointer-events-none select-none"
+        style={{ fontFamily: "var(--font-dm-mono)" }}
+      >
         {markets.map((market) => (
-          <Card key={market.pair} className="p-6 bg-card border-border hover:border-primary/50 transition-colors">
+          <Card key={market.pair} className="p-6 bg-card border-border">
             <div className="flex items-start justify-between mb-4">
               <div>
                 <h3 className="text-2xl font-semibold text-foreground mb-1">{market.pair}</h3>
