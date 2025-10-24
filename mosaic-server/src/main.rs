@@ -1,9 +1,10 @@
 use axum::{
     Router,
+    body::Body,
     extract::{Json, Path, State as AxumState},
-    http::{HeaderName, HeaderValue, StatusCode},
-    middleware,
-    response::IntoResponse,
+    http::{HeaderMap, HeaderName, HeaderValue, Request, StatusCode},
+    middleware::{self, Next},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use clap::Parser;
@@ -65,6 +66,46 @@ fn build_cors_layer() -> CorsLayer {
         .expose_headers([HeaderName::from_static("mcp-session-id")])
 }
 
+fn apply_desk_cors_headers(headers: &mut HeaderMap) {
+    headers.insert(
+        HeaderName::from_static("access-control-allow-origin"),
+        HeaderValue::from_static("*"),
+    );
+    headers.insert(
+        HeaderName::from_static("access-control-allow-methods"),
+        HeaderValue::from_static("POST, GET, OPTIONS"),
+    );
+    headers.insert(
+        HeaderName::from_static("access-control-allow-headers"),
+        HeaderValue::from_static("Content-Type"),
+    );
+    headers.insert(
+        HeaderName::from_static("access-control-max-age"),
+        HeaderValue::from_static("86400"),
+    );
+}
+
+async fn desk_cors_middleware(request: Request<Body>, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    apply_desk_cors_headers(response.headers_mut());
+    response
+}
+
+async fn preflight_desk_handler() -> impl IntoResponse {
+    let mut response = Response::builder()
+        .status(StatusCode::NO_CONTENT)
+        .body(Body::empty())
+        .unwrap();
+    apply_desk_cors_headers(response.headers_mut());
+    response
+}
+
+fn fallback_desk_url(account_id: &str) -> String {
+    std::env::var("MOSAIC_SERVER")
+        .map(|base| format!("{}/desk/{}", base.trim_end_matches('/'), account_id))
+        .unwrap_or_else(|_| format!("/desk/{}", account_id))
+}
+
 #[derive(Parser, Debug)]
 #[command(name = "mosaic-server")]
 #[command(about = "Mosaic server with MCP and REST endpoints", long_about = None)]
@@ -102,10 +143,14 @@ struct DeskPushNoteRequest {
 
 #[derive(Debug, Serialize)]
 struct DeskInfoResponse {
-    desk_uuid: String,
+    desk_account: String,
     account_id: String,
     network: String,
     market: mosaic_fi::Market,
+    base_account: String,
+    quote_account: String,
+    market_url: String,
+    owner_account: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -120,37 +165,51 @@ struct AssetSummary {
     hidden: bool,
 }
 
-// GET /desk/{uuid}
+// GET /desk/{account_id}
 async fn get_desk_info_handler(
     AxumState(serve): AxumState<Arc<Mutex<Serve>>>,
-    Path(uuid_str): Path<String>,
+    Path(account_id): Path<String>,
 ) -> impl IntoResponse {
-    // Parse UUID
-    let desk_uuid = match uuid::Uuid::parse_str(&uuid_str) {
-        Ok(uuid) => uuid,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("Invalid UUID: {}", e)})),
-            )
-                .into_response();
-        }
-    };
-
     // Get desk info
     let serve = serve.lock().await;
-    match serve.get_desk_info(desk_uuid).await {
+    match serve.get_desk_info(&account_id).await {
         Ok((account_id, network, market)) => {
+            let summary = serve.get_desk_market_summary(&account_id).ok().flatten();
+
+            let (base_account, quote_account, market_url, owner_account) = summary
+                .map(|s| {
+                    (
+                        s.base_account,
+                        s.quote_account,
+                        s.market_url,
+                        s.owner_account,
+                    )
+                })
+                .unwrap_or_else(|| {
+                    (
+                        String::new(),
+                        String::new(),
+                        fallback_desk_url(&account_id),
+                        String::new(),
+                    )
+                });
+
             let response = DeskInfoResponse {
-                desk_uuid: uuid_str,
+                desk_account: account_id.clone(),
                 account_id,
                 network: match network {
                     Network::Testnet => "Testnet".to_string(),
                     Network::Localnet => "Localnet".to_string(),
                 },
                 market,
+                base_account,
+                quote_account,
+                market_url,
+                owner_account,
             };
-            (StatusCode::OK, Json(response)).into_response()
+            let mut response = (StatusCode::OK, Json(response)).into_response();
+            apply_desk_cors_headers(response.headers_mut());
+            response
         }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -160,32 +219,20 @@ async fn get_desk_info_handler(
     }
 }
 
-// POST /desk/:uuid/note
+// POST /desk/:account_id/note
 async fn desk_push_note_handler(
     AxumState(serve): AxumState<Arc<Mutex<Serve>>>,
-    Path(uuid_str): Path<String>,
+    Path(account_id): Path<String>,
     Json(payload): Json<DeskPushNoteRequest>,
 ) -> impl IntoResponse {
-    // Parse UUID
-    let desk_uuid = match uuid::Uuid::parse_str(&uuid_str) {
-        Ok(uuid) => uuid,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("Invalid UUID: {}", e)})),
-            )
-                .into_response();
-        }
-    };
-
     // Push note to desk
     let serve = serve.lock().await;
-    match serve.desk_push_note(desk_uuid, payload.note).await {
+    match serve.desk_push_note(&account_id, payload.note).await {
         Ok(note_id) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "message": "Note pushed to desk successfully",
-                "desk_uuid": uuid_str,
+                "desk_account": account_id,
                 "note_id": note_id
             })),
         )
@@ -236,8 +283,9 @@ async fn run_mcp_server(
     let serve_state = Arc::new(Mutex::new(serve));
 
     // Create MCP service
+    let serve_state_for_mcp = serve_state.clone();
     let mcp_service = StreamableHttpService::new(
-        move || Ok(Mosaic::with_shared_serve(serve_state.clone())),
+        move || Ok(Mosaic::with_shared_serve(serve_state_for_mcp.clone())),
         LocalSessionManager::default().into(),
         Default::default(),
     );
@@ -269,7 +317,19 @@ async fn run_mcp_server(
         .layer(cors.clone());
 
     // Public unauthenticated routes
-    let public_routes = Router::new()
+    let desk_routes = Router::new()
+        .route(
+            "/desk/{account_id}",
+            get(get_desk_info_handler).options(preflight_desk_handler),
+        )
+        .route(
+            "/desk/{account_id}/note",
+            post(desk_push_note_handler).options(preflight_desk_handler),
+        )
+        .layer(middleware::from_fn(desk_cors_middleware))
+        .with_state(serve_state.clone());
+
+    let asset_routes = Router::new()
         .route("/assets", get(list_assets_handler))
         .layer(cors);
 
@@ -277,7 +337,8 @@ async fn run_mcp_server(
     let router = Router::new()
         .merge(mcp_router)
         .merge(oauth_routes)
-        .merge(public_routes);
+        .merge(asset_routes)
+        .merge(desk_routes);
 
     let tcp_listener = tokio::net::TcpListener::bind(&bind_address).await?;
 
@@ -303,11 +364,21 @@ async fn run_rest_server(
     serve.init_desks().await?;
     let serve_state = Arc::new(Mutex::new(serve));
 
+    let desk_routes = Router::new()
+        .route(
+            "/desk/{account_id}",
+            get(get_desk_info_handler).options(preflight_desk_handler),
+        )
+        .route(
+            "/desk/{account_id}/note",
+            post(desk_push_note_handler).options(preflight_desk_handler),
+        )
+        .layer(middleware::from_fn(desk_cors_middleware))
+        .with_state(serve_state.clone());
+
     let app = Router::new()
-        .route("/desk/{uuid}", get(get_desk_info_handler))
-        .route("/desk/{uuid}/note", post(desk_push_note_handler))
         .route("/assets", get(list_assets_handler))
-        .with_state(serve_state);
+        .merge(desk_routes);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
 
@@ -376,13 +447,20 @@ async fn run_combined_server_same_port(
         .route("/oauth/token", post(oauth::oauth_token))
         .layer(cors);
 
-    // Create HTTP REST API routes with shared state
-    let http_routes = Router::new()
-        .route("/desk/{uuid}", get(get_desk_info_handler))
-        .route("/desk/{uuid}/note", post(desk_push_note_handler))
+    let desk_routes = Router::new()
+        .route(
+            "/desk/{account_id}",
+            get(get_desk_info_handler).options(preflight_desk_handler),
+        )
+        .route(
+            "/desk/{account_id}/note",
+            post(desk_push_note_handler).options(preflight_desk_handler),
+        )
+        .layer(middleware::from_fn(desk_cors_middleware))
         .with_state(serve_state.clone());
 
-    // Public routes (no auth required)
+    let http_routes = Router::new().merge(desk_routes);
+
     let public_routes = Router::new()
         .route("/assets", get(list_assets_handler))
         .layer(build_cors_layer());
@@ -503,8 +581,8 @@ async fn run_both_servers_different_ports(
             let addr = SocketAddr::from(([0, 0, 0, 0], rest_port));
 
             let app = Router::new()
-                .route("/desk/{uuid}", get(get_desk_info_handler))
-                .route("/desk/{uuid}/note", post(desk_push_note_handler))
+                .route("/desk/{account_id}", get(get_desk_info_handler))
+                .route("/desk/{account_id}/note", post(desk_push_note_handler))
                 .route("/assets", get(list_assets_handler))
                 .with_state(serve_clone);
             let listener = tokio::net::TcpListener::bind(addr).await?;

@@ -1,0 +1,21 @@
+use.miden::note
+# use.miden::tx
+# use.std::sys
+# use.std::crypto::hashes::rpo
+
+use.external_contract::book
+
+const.INPUTS_START = 0
+const.INPUTS_INTENT_OFFSET = 0
+const.INPUTS_STATUS_OFFSET = 4
+
+begin
+    push.INPUTS_START exec.note::get_inputs drop drop
+    # => []
+    
+    mem_loadw.INPUTS_STATUS_OFFSET
+    # => [STATUS]
+
+    call.book::update_status
+    # => []
+end

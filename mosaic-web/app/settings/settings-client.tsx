@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Card } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
@@ -16,9 +17,17 @@ import {
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { AssetSummary, RoleSettings, callMcpTool, NetworkName } from '@/lib/mcp-tool'
+import {
+  AssetSummary,
+  RoleSettings,
+  callMcpTool,
+  NetworkName,
+  DeskAccountInfo,
+  type CreateAccountOrderResponse,
+} from '@/lib/mcp-tool'
+import { marketStorage } from '@/lib/market-storage'
 import { formatAssetSupply } from '@/lib/asset-format'
-import { Coins, AlertCircle, Plus, Loader2, Wallet } from 'lucide-react'
+import { Coins, AlertCircle, Plus, Loader2, Wallet, Briefcase, Copy } from 'lucide-react'
 import clsx from 'clsx'
 
 type ClientAccount = {
@@ -27,8 +36,18 @@ type ClientAccount = {
   name: string | null
 }
 
-export function WorkbenchClient() {
+type DeskAccount = {
+  accountId: string
+  network: NetworkName
+  market: DeskAccountInfo['market']
+  ownerAccount: string
+  ownerName: string | null
+  marketUrl: string
+}
+
+export function SettingsClient() {
   const [clientAccounts, setClientAccounts] = useState<ClientAccount[] | null>(null)
+  const [deskAccounts, setDeskAccounts] = useState<DeskAccount[] | null>(null)
   const [accountsLoading, setAccountsLoading] = useState(true)
   const [accountsError, setAccountsError] = useState(false)
   const [accountsHasAccess, setAccountsHasAccess] = useState(false)
@@ -37,6 +56,12 @@ export function WorkbenchClient() {
   const [creatingAccount, setCreatingAccount] = useState(false)
   const [accountName, setAccountName] = useState('')
   const [accountNetwork, setAccountNetwork] = useState<NetworkName>('Testnet')
+  const [createDeskModalOpen, setCreateDeskModalOpen] = useState(false)
+  const [creatingDesk, setCreatingDesk] = useState(false)
+  const [deskBaseAccount, setDeskBaseAccount] = useState('')
+  const [deskQuoteAccount, setDeskQuoteAccount] = useState('')
+  const [deskOwnerAccount, setDeskOwnerAccount] = useState('')
+  const [deskError, setDeskError] = useState<string | null>(null)
 
   const [assets, setAssets] = useState<AssetSummary[] | null>(null)
   const [loading, setLoading] = useState(true)
@@ -127,18 +152,20 @@ export function WorkbenchClient() {
       const tokenResponse = await fetch('/api/auth/token')
       if (!tokenResponse.ok) {
         setClientAccounts(null)
+        setDeskAccounts(null)
         return
       }
 
       const { accessToken } = await tokenResponse.json()
       if (!accessToken) {
         setClientAccounts(null)
+        setDeskAccounts(null)
         return
       }
 
       const data = await callMcpTool('list_accounts', {}, accessToken)
 
-      const clients = data.accounts
+      const clients = data.client_accounts
         .filter((account) => account.account_type === 'Client')
         .map<ClientAccount>((account) => {
           const normalizedName =
@@ -154,11 +181,22 @@ export function WorkbenchClient() {
         })
 
       setClientAccounts(clients)
+      setDeskOwnerAccount((current) => (current ? current : clients[0]?.accountId ?? ''))
+      const desks = (data.desk_accounts as DeskAccountInfo[]).map<DeskAccount>((desk) => ({
+        accountId: desk.account_id,
+        network: desk.network === 'Localnet' ? 'Localnet' : 'Testnet',
+        market: desk.market,
+        ownerAccount: desk.owner_account,
+        ownerName: clients.find((account) => account.accountId === desk.owner_account)?.name ?? null,
+        marketUrl: desk.market_url,
+      }))
+      setDeskAccounts(desks)
       setAccountsHasAccess(true)
     } catch (err) {
       console.error('Error fetching client accounts:', err)
       setAccountsError(true)
       setClientAccounts(null)
+      setDeskAccounts(null)
     } finally {
       setAccountsLoading(false)
     }
@@ -203,6 +241,15 @@ export function WorkbenchClient() {
   useEffect(() => {
     void loadAssets()
   }, [])
+
+  useEffect(() => {
+    if (!createDeskModalOpen) {
+      setDeskBaseAccount('')
+      setDeskQuoteAccount('')
+      setDeskError(null)
+      setCreatingDesk(false)
+    }
+  }, [createDeskModalOpen])
 
   const loadRoleSettings = useCallback(async () => {
     setRolesLoading(true)
@@ -273,10 +320,14 @@ export function WorkbenchClient() {
       }
 
       await callMcpTool(
-        'create_client_account',
+        'create_account_order',
         {
-          network: accountNetwork,
-          name: trimmedName,
+          order: {
+            CreateClient: {
+              network: accountNetwork,
+              name: trimmedName,
+            },
+          },
         },
         accessToken
       )
@@ -299,6 +350,133 @@ export function WorkbenchClient() {
       })
     } finally {
       setCreatingAccount(false)
+    }
+  }
+
+  const inferNetworkFromAccount = (accountId: string): NetworkName =>
+    accountId.toLowerCase().startsWith('mtst') ? 'Testnet' : 'Localnet'
+
+  const handleCreateDesk = async () => {
+    setDeskError(null)
+
+    if (!roleSettings?.is_desk) {
+      setDeskError('You must be a desk manager to create a desk.')
+      return
+    }
+
+    if (!clientAccounts || clientAccounts.length === 0) {
+      setDeskError('You must have at least one client account before creating a desk.')
+      return
+    }
+
+    if (!assets || assets.length < 2) {
+      setDeskError('You need at least two assets before creating a desk.')
+      return
+    }
+
+    if (!deskOwnerAccount) {
+      setDeskError('Select a client account to own this desk.')
+      return
+    }
+
+    const baseAsset = assets.find((asset) => asset.account === deskBaseAccount)
+    const quoteAsset = assets.find((asset) => asset.account === deskQuoteAccount)
+
+    if (!baseAsset) {
+      setDeskError('Selected base asset could not be found.')
+      return
+    }
+
+    if (!quoteAsset) {
+      setDeskError('Selected quote asset could not be found.')
+      return
+    }
+
+    if (baseAsset.account === quoteAsset.account) {
+      setDeskError('Base and quote assets must be different.')
+      return
+    }
+
+    const baseNetwork = inferNetworkFromAccount(baseAsset.account)
+    const quoteNetwork = inferNetworkFromAccount(quoteAsset.account)
+
+    if (baseNetwork !== quoteNetwork) {
+      setDeskError('Base and quote assets must be on the same network.')
+      return
+    }
+
+    const ownerAccount = clientAccounts.find((account) => account.accountId === deskOwnerAccount)
+    if (!ownerAccount) {
+      setDeskError('The selected owner account is no longer available.')
+      return
+    }
+
+    if (ownerAccount.network !== baseNetwork) {
+      setDeskError('Owner account must be on the same network as the selected assets.')
+      return
+    }
+
+    if (
+      ownerAccount.accountId === baseAsset.account ||
+      ownerAccount.accountId === quoteAsset.account
+    ) {
+      setDeskError('Owner account must be different from the asset accounts.')
+      return
+    }
+
+    setCreatingDesk(true)
+
+    try {
+      const tokenResponse = await fetch('/api/auth/token')
+      if (!tokenResponse.ok) {
+        throw new Error('You must be logged in to create a desk')
+      }
+
+      const { accessToken } = await tokenResponse.json()
+      if (!accessToken) {
+        throw new Error('Missing access token')
+      }
+
+      const createDeskResponse = (await callMcpTool(
+        'create_account_order',
+        {
+          order: {
+            CreateDesk: {
+              network: baseNetwork,
+              market: {
+                base: { code: baseAsset.symbol, issuer: baseAsset.account },
+                quote: { code: quoteAsset.symbol, issuer: quoteAsset.account },
+              },
+              owner_account: ownerAccount.accountId,
+            },
+          },
+        },
+        accessToken,
+      )) as CreateAccountOrderResponse
+
+      if (
+        createDeskResponse.success &&
+        'Desk' in createDeskResponse.result &&
+        createDeskResponse.result.Desk
+      ) {
+        const deskResult = createDeskResponse.result.Desk
+        marketStorage.saveMarket({
+          pair: `${deskResult.market.base.code}/${deskResult.market.quote.code}`,
+          marketId: deskResult.account_id,
+          baseFaucet: deskResult.market.base.issuer,
+          quoteFaucet: deskResult.market.quote.issuer,
+          deskUrl: deskResult.market_url,
+        })
+      }
+
+      setNotification({ type: 'success', message: 'Desk created successfully' })
+      setCreateDeskModalOpen(false)
+      await loadAccounts()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Failed to create desk'
+      setDeskError(message)
+    } finally {
+      setCreatingDesk(false)
     }
   }
 
@@ -335,12 +513,16 @@ export function WorkbenchClient() {
       }
 
       await callMcpTool(
-        'create_faucet_account',
+        'create_account_order',
         {
-          token_symbol: tokenSymbol,
-          decimals: decimalsValue,
-          max_supply: Number(scaledSupply),
-          network: network as NetworkName,
+          order: {
+            CreateFaucet: {
+              token_symbol: tokenSymbol,
+              decimals: decimalsValue,
+              max_supply: Number(scaledSupply),
+              network: network as NetworkName,
+            },
+          },
         },
         accessToken
       )
@@ -677,6 +859,343 @@ export function WorkbenchClient() {
                 </div>
               </Card>
             ))}
+          </div>
+        )}
+      </section>
+
+      <section className="mt-12">
+        <div className="mb-6 flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-2xl font-semibold">Desks</h2>
+            <p className="text-sm text-muted-foreground">
+              Overview of desk accounts tied to your organization and their market configuration.
+            </p>
+          </div>
+          <Dialog
+            open={createDeskModalOpen}
+            onOpenChange={(open) => {
+              setCreateDeskModalOpen(open)
+              if (!open) {
+                setDeskBaseAccount('')
+                setDeskQuoteAccount('')
+                setDeskOwnerAccount((clientAccounts && clientAccounts[0]?.accountId) || '')
+                setDeskError(null)
+              }
+            }}
+          >
+            <DialogTrigger asChild>
+              <Button
+                variant="outline"
+                disabled={
+                  !roleSettings?.is_desk ||
+                  !assets ||
+                  assets.length < 2 ||
+                  creatingDesk ||
+                  !clientAccounts ||
+                  clientAccounts.length === 0
+                }
+              >
+                <Plus className="mr-2 h-4 w-4" />
+                Create Desk
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="sm:max-w-[500px]">
+              <DialogHeader>
+                <DialogTitle>Create Desk</DialogTitle>
+                <DialogDescription>
+                  Choose base and quote assets to initialize a new desk account. Assets must exist in
+                  your catalog and reside on the same network.
+                </DialogDescription>
+              </DialogHeader>
+              <div className="grid gap-4 py-4">
+                <div className="grid gap-2">
+                  <Label htmlFor="deskOwnerAccount">Desk Owner</Label>
+                  <Select
+                    value={deskOwnerAccount}
+                    onValueChange={(value) => {
+                      setDeskOwnerAccount(value)
+                      setDeskError(null)
+                    }}
+                    disabled={!clientAccounts || clientAccounts.length === 0}
+                  >
+                    <SelectTrigger id="deskOwnerAccount">
+                      <SelectValue placeholder="Select owner account" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {clientAccounts && clientAccounts.length > 0 ? (
+                        clientAccounts.map((account) => (
+                          <SelectItem key={account.accountId} value={account.accountId}>
+                            {account.name
+                              ? `${account.name} · ${account.accountId}`
+                              : account.accountId}
+                          </SelectItem>
+                        ))
+                      ) : (
+                        <SelectItem value="" disabled>
+                          No client accounts available
+                        </SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="deskBaseAsset">Base Asset</Label>
+                  <Select
+                    value={deskBaseAccount}
+                    onValueChange={(value) => {
+                      setDeskBaseAccount(value)
+                      setDeskError(null)
+                    }}
+                    disabled={!assets || assets.length === 0}
+                  >
+                    <SelectTrigger id="deskBaseAsset">
+                      <SelectValue placeholder="Select base asset" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(assets ?? []).map((asset) => (
+                        <SelectItem key={asset.account} value={asset.account}>
+                          {asset.symbol} · {asset.account}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="deskQuoteAsset">Quote Asset</Label>
+                  <Select
+                    value={deskQuoteAccount}
+                    onValueChange={(value) => {
+                      setDeskQuoteAccount(value)
+                      setDeskError(null)
+                    }}
+                    disabled={!assets || assets.length === 0}
+                  >
+                    <SelectTrigger id="deskQuoteAsset">
+                      <SelectValue placeholder="Select quote asset" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {(assets ?? []).map((asset) => (
+                        <SelectItem key={asset.account} value={asset.account}>
+                          {asset.symbol} · {asset.account}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  Both assets must already exist and belong to the same network. Base and quote assets
+                  must be different.
+                </p>
+                {deskError && <p className="text-sm text-destructive">{deskError}</p>}
+              </div>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setCreateDeskModalOpen(false)}
+                  disabled={creatingDesk}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  onClick={() => {
+                    void handleCreateDesk()
+                  }}
+                  disabled={
+                    creatingDesk ||
+                    !deskOwnerAccount ||
+                    !deskBaseAccount ||
+                    !deskQuoteAccount ||
+                    deskBaseAccount === deskQuoteAccount
+                  }
+                >
+                  {creatingDesk && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {creatingDesk ? 'Creating...' : 'Create Desk'}
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        </div>
+
+        {accountsLoading && (
+          <div className="grid gap-4" style={{ fontFamily: 'var(--font-dm-mono)' }}>
+            {[1, 2].map((i) => (
+              <Card key={i} className="p-6 bg-card border-border animate-pulse">
+                <div className="flex items-center gap-4">
+                  <div className="h-12 w-12 rounded-full bg-muted" />
+                  <div className="flex-1 space-y-2">
+                    <div className="h-6 w-36 bg-muted rounded" />
+                    <div className="h-4 w-52 bg-muted rounded" />
+                  </div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        )}
+
+        {!accountsLoading && accountsError && (
+          <Card className="p-8 bg-card border-border">
+            <div className="flex flex-col items-center justify-center gap-4 text-center">
+              <div className="h-16 w-16 rounded-full bg-destructive/10 flex items-center justify-center">
+                <AlertCircle className="h-8 w-8 text-destructive" />
+              </div>
+              <div>
+                <h3 className="text-xl font-semibold text-foreground mb-2">Unable to Load Desks</h3>
+                <p className="text-muted-foreground max-w-md mb-4">
+                  We weren&apos;t able to retrieve your desk accounts. Please try again.
+                </p>
+                <Button onClick={() => { void loadAccounts() }}>Retry</Button>
+              </div>
+            </div>
+          </Card>
+        )}
+
+        {!accountsLoading && !accountsError && !accountsHasAccess && (
+          <Card className="p-8 bg-card border-border">
+            <div className="text-center space-y-2">
+              <h3 className="text-xl font-semibold text-foreground">Log in to view desks</h3>
+              <p className="text-muted-foreground">Sign in to review desk accounts and their allocated markets.</p>
+            </div>
+          </Card>
+        )}
+
+        {!accountsLoading && !accountsError && accountsHasAccess && deskAccounts && deskAccounts.length === 0 && (
+          <Card className="p-8 bg-card border-border">
+            <div className="text-center space-y-2">
+              <h3 className="text-xl font-semibold text-foreground">No desk accounts</h3>
+              <p className="text-muted-foreground">Promote a client to desk status to manage OTC liquidity.</p>
+            </div>
+          </Card>
+        )}
+
+        {!accountsLoading && !accountsError && accountsHasAccess && deskAccounts && deskAccounts.length > 0 && (
+          <div className="grid gap-4" style={{ fontFamily: 'var(--font-dm-mono)' }}>
+            {deskAccounts.map((desk) => {
+              const marketLabel = `${desk.market.base.code}/${desk.market.quote.code}`
+              const linkClassName =
+                'text-xl font-semibold text-primary underline-offset-2 hover:underline'
+
+              return (
+                <Card key={desk.accountId} className="p-6 bg-card border-border">
+                  <div className="flex items-center gap-4">
+                    <div className="h-12 w-12 rounded-full bg-primary/10 flex items-center justify-center">
+                      <Briefcase className="h-6 w-6 text-primary" />
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                        <Link href={`/desk/${desk.accountId}`} className={linkClassName}>
+                          {marketLabel}
+                        </Link>
+                        <Badge variant="outline" className="text-xs">
+                          {desk.network}
+                        </Badge>
+                      </div>
+                      <div className="space-y-1 text-sm text-muted-foreground">
+                        <div>
+                          Desk Account:{' '}
+                          {desk.accountId.startsWith('mtst') ? (
+                            <a
+                              href={`https://testnet.midenscan.com/account/${desk.accountId}`}
+                              className="text-primary underline-offset-2 hover:underline"
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              {desk.accountId}
+                            </a>
+                          ) : (
+                            <span className="font-mono break-all">{desk.accountId}</span>
+                          )}
+                        </div>
+                        <div>
+                          Base:{' '}
+                          <span className="font-semibold text-foreground">
+                            {desk.market.base.code}
+                          </span>{' '}
+                          (
+                          {desk.market.base.issuer.startsWith('mtst') ? (
+                            <a
+                              href={`https://testnet.midenscan.com/account/${desk.market.base.issuer}`}
+                              className="text-primary underline-offset-2 hover:underline"
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              {desk.market.base.issuer}
+                            </a>
+                          ) : (
+                            <span className="font-mono break-all">
+                              {desk.market.base.issuer}
+                            </span>
+                          )}
+                          )
+                        </div>
+                        <div>
+                          Quote:{' '}
+                          <span className="font-semibold text-foreground">
+                            {desk.market.quote.code}
+                          </span>{' '}
+                          (
+                          {desk.market.quote.issuer.startsWith('mtst') ? (
+                            <a
+                              href={`https://testnet.midenscan.com/account/${desk.market.quote.issuer}`}
+                              className="text-primary underline-offset-2 hover:underline"
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              {desk.market.quote.issuer}
+                            </a>
+                          ) : (
+                            <span className="font-mono break-all">
+                              {desk.market.quote.issuer}
+                            </span>
+                          )}
+                          )
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span>Routing URL:{' '}
+                            <span className="text-primary underline-offset-2">
+                              {desk.marketUrl}
+                            </span>
+                          </span>
+                          <button
+                            type="button"
+                            className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-border bg-muted text-muted-foreground hover:bg-primary/10 hover:text-primary transition-colors"
+                            onClick={async () => {
+                              try {
+                                await navigator.clipboard.writeText(desk.marketUrl)
+                              } catch (err) {
+                                console.warn('Failed to copy Routing URL:', err)
+                              }
+                            }}
+                            title="Copy Routing URL"
+                          >
+                            <Copy className="h-3 w-3" />
+                          </button>
+                        </div>
+                        <div>
+                          Owner:{' '}
+                          <span className="font-semibold text-foreground">
+                            {desk.ownerName ?? 'Client Account'}
+                          </span>{' '}
+                          (
+                          {desk.ownerAccount.startsWith('mtst') ? (
+                            <a
+                              href={`https://testnet.midenscan.com/account/${desk.ownerAccount}`}
+                              className="text-primary underline-offset-2 hover:underline"
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              {desk.ownerAccount}
+                            </a>
+                          ) : (
+                            <span className="font-mono break-all">{desk.ownerAccount}</span>
+                          )}
+                          )
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </Card>
+              )
+            })}
           </div>
         )}
       </section>

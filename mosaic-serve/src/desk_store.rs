@@ -1,8 +1,10 @@
 use mosaic_fi::{Market, note::MosaicNote};
 use mosaic_miden::Network;
 use rusqlite::{Connection, Result as SqliteResult, params};
-use std::path::{Path, PathBuf};
-use uuid::Uuid;
+use std::{
+    io,
+    path::{Path, PathBuf},
+};
 
 /// Status of a note in the desk
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,51 +49,96 @@ pub struct DeskNoteStore {
     conn: Connection,
 }
 
+#[derive(Debug, Clone)]
+pub struct StoredDesk {
+    pub desk_account: String,
+    pub owner_identifier: String,
+    pub owner_account: Option<String>,
+    pub path: PathBuf,
+    pub network: Network,
+    pub market: Market,
+    pub market_url: Option<String>,
+}
+
 impl DeskStore {
     /// Create or open the desk store at the specified path
     pub fn new<P: AsRef<Path>>(db_path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let conn = Connection::open(db_path)?;
+        Self::create_schema(&conn)?;
+        Self::ensure_indexes(&conn)?;
+        Ok(DeskStore { conn })
+    }
 
-        // Create the desks table if it doesn't exist
+    fn create_schema(conn: &Connection) -> SqliteResult<()> {
         conn.execute(
             "CREATE TABLE IF NOT EXISTS desks (
-                uuid TEXT PRIMARY KEY,
+                desk_account TEXT PRIMARY KEY,
+                owner_identifier TEXT NOT NULL,
+                owner_account TEXT,
                 path TEXT NOT NULL,
                 network TEXT NOT NULL,
                 base_code TEXT NOT NULL,
                 base_issuer TEXT NOT NULL,
                 quote_code TEXT NOT NULL,
-                quote_issuer TEXT NOT NULL
+                quote_issuer TEXT NOT NULL,
+                market_url TEXT
             )",
             [],
         )?;
 
-        Ok(DeskStore { conn })
+        let _ = conn.execute("ALTER TABLE desks ADD COLUMN owner_account TEXT", []);
+        let _ = conn.execute("ALTER TABLE desks ADD COLUMN market_url TEXT", []);
+
+        Ok(())
+    }
+
+    fn ensure_indexes(conn: &Connection) -> SqliteResult<()> {
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_desks_owner ON desks(owner_identifier)",
+            [],
+        )?;
+        Ok(())
     }
 
     /// Insert a new desk record
     pub fn insert_desk(
         &self,
-        uuid: Uuid,
+        desk_account: &str,
+        owner_identifier: &str,
+        owner_account: &str,
         path: &Path,
         network: Network,
         market: &Market,
+        market_url: &str,
     ) -> Result<(), Box<dyn std::error::Error>> {
         let network_str = match network {
             Network::Testnet => "Testnet",
             Network::Localnet => "Localnet",
         };
 
+        let path_str = path
+            .to_str()
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Desk path contains invalid UTF-8: {}", path.display()),
+                )
+            })
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+
         self.conn.execute(
-            "INSERT INTO desks (uuid, path, network, base_code, base_issuer, quote_code, quote_issuer) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO desks (desk_account, owner_identifier, owner_account, path, network, base_code, base_issuer, quote_code, quote_issuer, market_url) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
-                uuid.to_string(),
-                path.to_str().unwrap(),
+                desk_account,
+                owner_identifier,
+                owner_account,
+                path_str,
                 network_str,
                 market.base.code,
                 market.base.issuer,
                 market.quote.code,
-                market.quote.issuer
+                market.quote.issuer,
+                market_url,
             ],
         )?;
 
@@ -99,25 +146,22 @@ impl DeskStore {
     }
 
     /// List all desks
-    pub fn list_desks(&self) -> SqliteResult<Vec<(Uuid, PathBuf, Network, Market)>> {
-        let mut stmt = self.conn.prepare("SELECT uuid, path, network, base_code, base_issuer, quote_code, quote_issuer FROM desks")?;
+    pub fn list_desks(&self) -> SqliteResult<Vec<StoredDesk>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT desk_account, owner_identifier, owner_account, path, network, base_code, base_issuer, quote_code, quote_issuer, market_url FROM desks",
+        )?;
 
         let desks_iter = stmt.query_map([], |row| {
-            let uuid_str: String = row.get(0)?;
-            let path_str: String = row.get(1)?;
-            let network_str: String = row.get(2)?;
-            let base_code: String = row.get(3)?;
-            let base_issuer: String = row.get(4)?;
-            let quote_code: String = row.get(5)?;
-            let quote_issuer: String = row.get(6)?;
-
-            let uuid = Uuid::parse_str(&uuid_str).map_err(|e| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    0,
-                    rusqlite::types::Type::Text,
-                    Box::new(e),
-                )
-            })?;
+            let desk_account: String = row.get(0)?;
+            let owner_identifier: String = row.get(1)?;
+            let owner_account: Option<String> = row.get(2)?;
+            let path_str: String = row.get(3)?;
+            let network_str: String = row.get(4)?;
+            let base_code: String = row.get(5)?;
+            let base_issuer: String = row.get(6)?;
+            let quote_code: String = row.get(7)?;
+            let quote_issuer: String = row.get(8)?;
+            let market_url: Option<String> = row.get(9)?;
 
             let path = PathBuf::from(path_str);
 
@@ -126,10 +170,10 @@ impl DeskStore {
                 "Localnet" => Network::Localnet,
                 _ => {
                     return Err(rusqlite::Error::FromSqlConversionFailure(
-                        2,
+                        3,
                         rusqlite::types::Type::Text,
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
+                        Box::new(io::Error::new(
+                            io::ErrorKind::InvalidData,
                             format!("Invalid network: {}", network_str),
                         )),
                     ));
@@ -147,7 +191,15 @@ impl DeskStore {
                 },
             };
 
-            Ok((uuid, path, network, market))
+            Ok(StoredDesk {
+                desk_account,
+                owner_identifier,
+                owner_account,
+                path,
+                network,
+                market,
+                market_url,
+            })
         })?;
 
         let mut desks = Vec::new();
@@ -158,28 +210,31 @@ impl DeskStore {
         Ok(desks)
     }
 
-    /// Delete a desk by UUID
-    pub fn delete_desk(&self, uuid: Uuid) -> Result<(), Box<dyn std::error::Error>> {
+    /// Delete a desk by account identifier
+    pub fn delete_desk(&self, desk_account: &str) -> Result<(), Box<dyn std::error::Error>> {
         self.conn.execute(
-            "DELETE FROM desks WHERE uuid = ?1",
-            params![uuid.to_string()],
+            "DELETE FROM desks WHERE desk_account = ?1",
+            params![desk_account],
         )?;
         Ok(())
     }
 
-    /// Get a desk by UUID
-    pub fn get_desk(&self, uuid: Uuid) -> SqliteResult<Option<(PathBuf, Network, Market)>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT path, network, base_code, base_issuer, quote_code, quote_issuer FROM desks WHERE uuid = ?1")?;
+    /// Get a desk by account identifier
+    pub fn get_desk(&self, desk_account: &str) -> SqliteResult<Option<StoredDesk>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT owner_identifier, owner_account, path, network, base_code, base_issuer, quote_code, quote_issuer, market_url FROM desks WHERE desk_account = ?1",
+        )?;
 
-        let result = stmt.query_row(params![uuid.to_string()], |row| {
-            let path_str: String = row.get(0)?;
-            let network_str: String = row.get(1)?;
-            let base_code: String = row.get(2)?;
-            let base_issuer: String = row.get(3)?;
-            let quote_code: String = row.get(4)?;
-            let quote_issuer: String = row.get(5)?;
+        let result = stmt.query_row(params![desk_account], |row| {
+            let owner_identifier: String = row.get(0)?;
+            let owner_account: Option<String> = row.get(1)?;
+            let path_str: String = row.get(2)?;
+            let network_str: String = row.get(3)?;
+            let base_code: String = row.get(4)?;
+            let base_issuer: String = row.get(5)?;
+            let quote_code: String = row.get(6)?;
+            let quote_issuer: String = row.get(7)?;
+            let market_url: Option<String> = row.get(8)?;
 
             let path = PathBuf::from(path_str);
 
@@ -188,10 +243,10 @@ impl DeskStore {
                 "Localnet" => Network::Localnet,
                 _ => {
                     return Err(rusqlite::Error::FromSqlConversionFailure(
-                        1,
+                        2,
                         rusqlite::types::Type::Text,
-                        Box::new(std::io::Error::new(
-                            std::io::ErrorKind::InvalidData,
+                        Box::new(io::Error::new(
+                            io::ErrorKind::InvalidData,
                             format!("Invalid network: {}", network_str),
                         )),
                     ));
@@ -209,7 +264,15 @@ impl DeskStore {
                 },
             };
 
-            Ok((path, network, market))
+            Ok(StoredDesk {
+                desk_account: desk_account.to_string(),
+                owner_identifier,
+                owner_account,
+                path,
+                network,
+                market,
+                market_url,
+            })
         });
 
         match result {
@@ -217,6 +280,70 @@ impl DeskStore {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e),
         }
+    }
+
+    /// List all desks owned by a specific identifier
+    pub fn list_desks_for_owner(&self, owner_identifier: &str) -> SqliteResult<Vec<StoredDesk>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT desk_account, owner_account, path, network, base_code, base_issuer, quote_code, quote_issuer, market_url FROM desks WHERE owner_identifier = ?1",
+        )?;
+
+        let desks_iter = stmt.query_map(params![owner_identifier], |row| {
+            let desk_account: String = row.get(0)?;
+            let owner_account: Option<String> = row.get(1)?;
+            let path_str: String = row.get(2)?;
+            let network_str: String = row.get(3)?;
+            let base_code: String = row.get(4)?;
+            let base_issuer: String = row.get(5)?;
+            let quote_code: String = row.get(6)?;
+            let quote_issuer: String = row.get(7)?;
+            let market_url: Option<String> = row.get(8)?;
+
+            let path = PathBuf::from(path_str);
+
+            let network = match network_str.as_str() {
+                "Testnet" => Network::Testnet,
+                "Localnet" => Network::Localnet,
+                _ => {
+                    return Err(rusqlite::Error::FromSqlConversionFailure(
+                        2,
+                        rusqlite::types::Type::Text,
+                        Box::new(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!("Invalid network: {}", network_str),
+                        )),
+                    ));
+                }
+            };
+
+            let market = Market {
+                base: mosaic_fi::Currency {
+                    code: base_code,
+                    issuer: base_issuer,
+                },
+                quote: mosaic_fi::Currency {
+                    code: quote_code,
+                    issuer: quote_issuer,
+                },
+            };
+
+            Ok(StoredDesk {
+                desk_account,
+                owner_identifier: owner_identifier.to_string(),
+                owner_account,
+                path,
+                network,
+                market,
+                market_url,
+            })
+        })?;
+
+        let mut desks = Vec::new();
+        for desk in desks_iter {
+            desks.push(desk?);
+        }
+
+        Ok(desks)
     }
 }
 
@@ -341,7 +468,7 @@ impl DeskNoteStore {
                 rusqlite::Error::FromSqlConversionFailure(
                     2,
                     rusqlite::types::Type::Text,
-                    Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+                    Box::new(io::Error::new(io::ErrorKind::InvalidData, e)),
                 )
             })?;
             notes.push((id, note, status));

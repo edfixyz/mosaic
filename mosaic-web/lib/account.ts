@@ -62,6 +62,7 @@ type Quote = { amount: bigint, price: bigint }
 
 type DeskInfo = {
   pair: Pair,
+  status: 'active' | 'inactive',
   quotes: {
     sell: Quote[],
     buy: Quote[]
@@ -79,7 +80,11 @@ export const getDeskInfo = (Word: any, Felt: any, account: Account | null | unde
     const sell = getSQuotes(Word, Felt, account, 7, 6)
     const buy = getSQuotes(Word, Felt, account, 12, 11)
     if(!sell || !buy) return null
-    return { pair, quotes: { sell, buy } }
+    const statusValue = account.storage().getItem(4)
+    const status: 'active' | 'inactive' = (statusValue?.toU64s()[1] || 0n) === 0n ? 'inactive' : 'active'
+    const result = { pair, status, quotes: { sell, buy } }
+    console.log('RAA', result)
+    return result
   } catch (error) {
     console.error('Error getting desk info:', error)
     return null
@@ -90,7 +95,7 @@ export const getDeskInfo = (Word: any, Felt: any, account: Account | null | unde
 const getSQuotes = (Word: any, Felt: any, account: Account, startSlot: number, bookSlot: number): { amount: bigint, price: bigint }[] | null => {
   const quotes = []
   let id: bigint | undefined = account.storage().getItem(startSlot)?.toU64s()[0]
-  if(!id) return null
+  if(id === undefined) return null
 
   while(id !== 0n) {
     const z0 = new Felt(BigInt(0))

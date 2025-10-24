@@ -1,5 +1,5 @@
 #![allow(dead_code)]
-use mosaic_fi::AccountType;
+use mosaic_fi::{AccountOrder, AccountOrderResult};
 use mosaic_miden::Network;
 use mosaic_serve::Serve;
 use std::sync::Arc;
@@ -64,41 +64,6 @@ fn json_content<T: serde::Serialize>(
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CreateClientAccountRequest {
-    /// Network: "Testnet" or "Localnet"
-    pub network: String,
-    /// Optional display name for the account
-    #[serde(default)]
-    pub name: Option<String>,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CreateDeskAccountRequest {
-    /// Network: "Testnet" or "Localnet"
-    pub network: String,
-    /// Market information with base and quote currencies
-    pub market: mosaic_fi::Market,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CreateLiquidityAccountRequest {
-    /// Network: "Testnet" or "Localnet"
-    pub network: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct CreateFaucetAccountRequest {
-    /// Token symbol (e.g., "MID")
-    pub token_symbol: String,
-    /// Number of decimals for the token
-    pub decimals: u8,
-    /// Maximum supply of tokens
-    pub max_supply: u64,
-    /// Network: "Testnet" or "Localnet"
-    pub network: String,
-}
-
-#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListAccountsRequest {}
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -147,6 +112,17 @@ pub struct CreateOrderRequest {
     /// Whether to commit the note after creation (default: true)
     #[serde(default = "default_true")]
     pub commit: bool,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, schemars::JsonSchema)]
+pub struct CreateAccountOrderRequest {
+    pub order: AccountOrder,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct CreateAccountOrderResponse {
+    pub success: bool,
+    pub result: AccountOrderResult,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -239,16 +215,16 @@ pub struct AccountStatus {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct DeskPushNoteRequest {
-    /// Desk UUID
-    pub desk_uuid: String,
+    /// Desk account ID in bech32 format
+    pub desk_account: String,
     /// Mosaic note to push to the desk
     pub note: mosaic_fi::note::MosaicNote,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GetDeskInfoRequest {
-    /// Desk UUID
-    pub desk_uuid: String,
+    /// Desk account ID in bech32 format
+    pub desk_account: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -257,40 +233,8 @@ pub struct FlushRequest {}
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct VersionRequest {}
 
-// Response types
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct CreateClientAccountResponse {
-    pub success: bool,
-    pub account_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub name: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct CreateDeskAccountResponse {
-    pub success: bool,
-    pub account_id: String,
-    pub desk_uuid: String,
-    pub market: mosaic_fi::Market,
-}
-
-#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct CreateLiquidityAccountResponse {
-    pub success: bool,
-    pub account_id: String,
-}
-
-#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct CreateFaucetAccountResponse {
-    pub success: bool,
-    pub account_id: String,
-    pub token_symbol: String,
-    pub decimals: u8,
-    pub max_supply: u64,
-}
-
-#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
-pub struct AccountInfo {
+pub struct ClientAccountInfo {
     pub account_id: String,
     pub network: String,
     pub account_type: String,
@@ -299,9 +243,19 @@ pub struct AccountInfo {
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
+pub struct DeskAccountInfo {
+    pub account_id: String,
+    pub network: String,
+    pub market: mosaic_fi::Market,
+    pub owner_account: String,
+    pub market_url: String,
+}
+
+#[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct ListAccountsResponse {
     pub success: bool,
-    pub accounts: Vec<AccountInfo>,
+    pub client_accounts: Vec<ClientAccountInfo>,
+    pub desk_accounts: Vec<DeskAccountInfo>,
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
@@ -335,14 +289,14 @@ pub struct ConsumeNoteResponse {
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct DeskPushNoteResponse {
     pub success: bool,
-    pub desk_uuid: String,
+    pub desk_account: String,
     pub note_id: i64,
 }
 
 #[derive(Debug, serde::Serialize, schemars::JsonSchema)]
 pub struct GetDeskInfoResponse {
     pub success: bool,
-    pub desk_uuid: String,
+    pub desk_account: String,
     pub account_id: String,
     pub network: String,
     pub market: mosaic_fi::Market,
@@ -387,74 +341,47 @@ impl Mosaic {
         }
     }
 
-    #[tool(description = "Create a new Client account")]
-    async fn create_client_account(
+    #[tool(description = "Create an account using the account order workflow")]
+    async fn create_account_order(
         &self,
-        Parameters(req): Parameters<CreateClientAccountRequest>,
+        Parameters(req): Parameters<CreateAccountOrderRequest>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
-        // Derive secret from authenticated user
         let secret = derive_secret_from_context(&context)?;
 
-        // Parse network
-        let network = match req.network.as_str() {
-            "Testnet" => Network::Testnet,
-            "Localnet" => Network::Localnet,
-            _ => {
-                let error_msg = format!(
-                    "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
-                    req.network
-                );
-                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
-                return Err(McpError::invalid_params(error_msg, None));
-            }
-        };
+        let order_kind = req.order.kind();
+        let order_clone = req.order.clone();
 
-        // Normalize account name (trim whitespace and ignore empty values)
-        let name_for_store = req
-            .name
-            .as_ref()
-            .map(|value| value.trim())
-            .filter(|value| !value.is_empty())
-            .map(|value| value.to_string());
-
-        // Create the client account
-        let account_id_bech32 = {
+        let result = {
             let mut serve = self.serve.lock().await;
             serve
-                .new_account(
-                    secret,
-                    AccountType::Client,
-                    network,
-                    name_for_store.as_deref(),
-                )
+                .create_account_order(secret, order_clone)
                 .await
                 .map_err(|e| {
-                    let error_msg = format!("Failed to create client account: {}", e);
+                    let error_msg = format!("Failed to execute {order_kind}: {e}");
                     tracing::error!(
                         error = %error_msg,
-                        network = %req.network,
-                        "Failed to create client account"
+                        order_kind = order_kind,
+                        "Failed to create account via account order"
                     );
                     McpError::internal_error(error_msg, None)
                 })?
         };
 
+        let result_kind = result.kind();
         tracing::info!(
-            tool = "create_client_account",
-            account_id = %account_id_bech32,
-            network = %req.network,
-            name = ?name_for_store,
-            "Created client account"
+            tool = "create_account_order",
+            order_kind = order_kind,
+            result_kind = result_kind,
+            "Account order executed"
         );
 
-        let response = CreateClientAccountResponse {
+        let response = CreateAccountOrderResponse {
             success: true,
-            account_id: account_id_bech32,
-            name: name_for_store,
+            result,
         };
 
-        let content = json_content(&response, "create_client_account response")?;
+        let content = json_content(&response, "create_account_order response")?;
 
         Ok(CallToolResult::success(vec![content]))
     }
@@ -620,212 +547,6 @@ impl Mosaic {
         Ok(CallToolResult::success(vec![content]))
     }
 
-    #[tool(description = "Create a new Desk account with market information")]
-    async fn create_desk_account(
-        &self,
-        Parameters(req): Parameters<CreateDeskAccountRequest>,
-        context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        // Derive secret from authenticated user
-        let secret = derive_secret_from_context(&context)?;
-
-        // Parse network
-        let network = match req.network.as_str() {
-            "Testnet" => Network::Testnet,
-            "Localnet" => Network::Localnet,
-            _ => {
-                let error_msg = format!(
-                    "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
-                    req.network
-                );
-                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
-                return Err(McpError::invalid_params(error_msg, None));
-            }
-        };
-
-        // Create the desk account
-        let (uuid, account_id_bech32) = {
-            let mut serve = self.serve.lock().await;
-            serve
-                .new_desk_account(secret, network, req.market.clone())
-                .await
-                .map_err(|e| {
-                    let error_msg = format!("Failed to create desk account: {}", e);
-                    tracing::error!(
-                        error = %error_msg,
-                        network = %req.network,
-                        "Failed to create desk account"
-                    );
-                    McpError::internal_error(error_msg, None)
-                })?
-        };
-
-        tracing::info!(
-            tool = "create_desk_account",
-            account_id = %account_id_bech32,
-            desk_uuid = %uuid,
-            network = %req.network,
-            base_currency = %req.market.base.code,
-            quote_currency = %req.market.quote.code,
-            "Created desk account"
-        );
-
-        let response = CreateDeskAccountResponse {
-            success: true,
-            account_id: account_id_bech32,
-            desk_uuid: uuid.to_string(),
-            market: req.market,
-        };
-
-        let content = json_content(&response, "create_desk_account response")?;
-
-        Ok(CallToolResult::success(vec![content]))
-    }
-
-    #[tool(description = "Create a new Liquidity account")]
-    async fn create_liquidity_account(
-        &self,
-        Parameters(req): Parameters<CreateLiquidityAccountRequest>,
-        context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        // Derive secret from authenticated user
-        let secret = derive_secret_from_context(&context)?;
-
-        // Parse network
-        let network = match req.network.as_str() {
-            "Testnet" => Network::Testnet,
-            "Localnet" => Network::Localnet,
-            _ => {
-                let error_msg = format!(
-                    "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
-                    req.network
-                );
-                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
-                return Err(McpError::invalid_params(error_msg, None));
-            }
-        };
-
-        // Create the liquidity account
-        let account_id_bech32 = {
-            let mut serve = self.serve.lock().await;
-            serve
-                .new_account(secret, AccountType::Liquidity, network, None)
-                .await
-                .map_err(|e| {
-                    let error_msg = format!("Failed to create liquidity account: {}", e);
-                    tracing::error!(
-                        error = %error_msg,
-                        network = %req.network,
-                        "Failed to create liquidity account"
-                    );
-                    McpError::internal_error(error_msg, None)
-                })?
-        };
-
-        tracing::info!(
-            tool = "create_liquidity_account",
-            account_id = %account_id_bech32,
-            network = %req.network,
-            "Created liquidity account"
-        );
-
-        let response = CreateLiquidityAccountResponse {
-            success: true,
-            account_id: account_id_bech32,
-        };
-
-        let content = json_content(&response, "create_liquidity_account response")?;
-
-        Ok(CallToolResult::success(vec![content]))
-    }
-
-    #[tool(
-        description = "Create a new faucet account with the specified token symbol, decimals, and max supply"
-    )]
-    async fn create_faucet_account(
-        &self,
-        Parameters(req): Parameters<CreateFaucetAccountRequest>,
-        context: RequestContext<RoleServer>,
-    ) -> Result<CallToolResult, McpError> {
-        // Derive secret from authenticated user
-        let secret = derive_secret_from_context(&context)?;
-
-        // Parse network
-        let network = match req.network.as_str() {
-            "Testnet" => Network::Testnet,
-            "Localnet" => Network::Localnet,
-            _ => {
-                let error_msg = format!(
-                    "Invalid network '{}'. Must be 'Testnet' or 'Localnet'",
-                    req.network
-                );
-                tracing::error!(error = %error_msg, network = %req.network, "Invalid network");
-                return Err(McpError::invalid_params(error_msg, None));
-            }
-        };
-
-        // Create the faucet account
-        let account_id_bech32 = {
-            let mut serve = self.serve.lock().await;
-            let account_id = serve
-                .new_faucet_account(
-                    secret,
-                    network,
-                    req.token_symbol.clone(),
-                    req.decimals,
-                    req.max_supply,
-                )
-                .await
-                .map_err(|e| {
-                    let error_msg = format!("Failed to create faucet account: {}", e);
-                    tracing::error!(
-                        error = %error_msg,
-                        token_symbol = %req.token_symbol,
-                        network = %req.network,
-                        "Failed to create faucet account"
-                    );
-                    McpError::internal_error(error_msg, None)
-                })?;
-
-            let max_supply_string = req.max_supply.to_string();
-            let asset = mosaic_serve::RegistryAsset {
-                symbol: &req.token_symbol,
-                account: &account_id,
-                decimals: req.decimals,
-                max_supply: Some(max_supply_string.as_str()),
-                owned: true,
-            };
-
-            if let Err(err) = serve.register_asset(secret, asset) {
-                tracing::warn!(error = %err, "Failed to register faucet asset for user");
-            }
-
-            account_id
-        };
-
-        tracing::info!(
-            tool = "create_faucet_account",
-            account_id = %account_id_bech32,
-            token_symbol = %req.token_symbol,
-            decimals = req.decimals,
-            max_supply = req.max_supply,
-            network = %req.network,
-            "Created faucet account"
-        );
-
-        let response = CreateFaucetAccountResponse {
-            success: true,
-            account_id: account_id_bech32,
-            token_symbol: req.token_symbol,
-            decimals: req.decimals,
-            max_supply: req.max_supply,
-        };
-
-        let content = json_content(&response, "create_faucet_account response")?;
-
-        Ok(CallToolResult::success(vec![content]))
-    }
-
     #[tool(
         description = "List all account IDs (bech32) with their networks for the authenticated user"
     )]
@@ -849,23 +570,41 @@ impl Mosaic {
 
         tracing::info!(
             tool = "list_accounts",
-            account_count = accounts.len(),
+            client_account_count = accounts.client_accounts.len(),
+            desk_account_count = accounts.desk_accounts.len(),
             "Listed accounts"
         );
 
-        let account_infos: Vec<AccountInfo> = accounts
+        let client_accounts: Vec<ClientAccountInfo> = accounts
+            .client_accounts
             .into_iter()
-            .map(|(account_id, network, account_type, name)| AccountInfo {
-                account_id,
-                network,
-                account_type,
-                name,
+            .map(|account| ClientAccountInfo {
+                account_id: account.account_id,
+                network: account.network,
+                account_type: account.account_type,
+                name: account.name,
+            })
+            .collect();
+
+        let desk_accounts: Vec<DeskAccountInfo> = accounts
+            .desk_accounts
+            .into_iter()
+            .map(|desk| DeskAccountInfo {
+                account_id: desk.account_id,
+                network: match desk.network {
+                    Network::Testnet => "Testnet".to_string(),
+                    Network::Localnet => "Localnet".to_string(),
+                },
+                market: desk.market,
+                owner_account: desk.owner_account,
+                market_url: desk.market_url,
             })
             .collect();
 
         let response = ListAccountsResponse {
             success: true,
-            accounts: account_infos,
+            client_accounts,
+            desk_accounts,
         };
 
         let content = json_content(&response, "list_accounts response")?;
@@ -1254,21 +993,16 @@ impl Mosaic {
     ) -> Result<CallToolResult, McpError> {
         let secret = derive_secret_from_context(&context)?;
 
-        // Parse UUID
-        let desk_uuid = uuid::Uuid::parse_str(&req.desk_uuid).map_err(|e| {
-            let error_msg = format!("Invalid desk UUID: {}", e);
-            tracing::error!(error = %error_msg, desk_uuid = %req.desk_uuid, "Failed to parse desk UUID");
-            McpError::invalid_params(error_msg, None)
-        })?;
+        let desk_account = req.desk_account.clone();
 
         // Fetch desk info to validate ownership
         let (desk_account_id, desk_network, _market) = {
             let serve = self.serve.lock().await;
-            serve.get_desk_info(desk_uuid).await.map_err(|e| {
+            serve.get_desk_info(&desk_account).await.map_err(|e| {
                 let error_msg = format!("Failed to get desk info: {}", e);
                 tracing::error!(
                     error = %error_msg,
-                    desk_uuid = %desk_uuid,
+                    desk_account = %desk_account,
                     "Failed to get desk info during desk_push_note"
                 );
                 McpError::internal_error(error_msg, None)
@@ -1284,19 +1018,15 @@ impl Mosaic {
             })?
         };
 
-        let desk_network_label = match desk_network {
-            Network::Testnet => "Testnet",
-            Network::Localnet => "Localnet",
-        };
-
-        let owns_desk = accounts.iter().any(|(account_id, network, _, _)| {
-            account_id == &desk_account_id && network == desk_network_label
-        });
+        let owns_desk = accounts
+            .desk_accounts
+            .iter()
+            .any(|desk| desk.account_id == desk_account && desk.network == desk_network);
 
         if !owns_desk {
-            let error_msg = format!("Authenticated user does not own desk {}", req.desk_uuid);
+            let error_msg = format!("Authenticated user does not own desk {}", desk_account);
             tracing::warn!(
-                desk_uuid = %desk_uuid,
+                desk_account = %desk_account,
                 account_id = %desk_account_id,
                 "Desk ownership check failed"
             );
@@ -1307,13 +1037,13 @@ impl Mosaic {
         let note_id = {
             let serve = self.serve.lock().await;
             serve
-                .desk_push_note(desk_uuid, req.note.clone())
+                .desk_push_note(&desk_account, req.note.clone())
                 .await
                 .map_err(|e| {
                     let error_msg = format!("Failed to push note to desk: {}", e);
                     tracing::error!(
                         error = %error_msg,
-                        desk_uuid = %desk_uuid,
+                        desk_account = %desk_account,
                         "Failed to push note to desk"
                     );
                     McpError::internal_error(error_msg, None)
@@ -1322,14 +1052,14 @@ impl Mosaic {
 
         tracing::info!(
             tool = "desk_push_note",
-            desk_uuid = %desk_uuid,
+            desk_account = %desk_account,
             note_id = note_id,
             "Pushed note to desk"
         );
 
         let response = DeskPushNoteResponse {
             success: true,
-            desk_uuid: desk_uuid.to_string(),
+            desk_account,
             note_id,
         };
 
@@ -1343,21 +1073,16 @@ impl Mosaic {
         &self,
         Parameters(req): Parameters<GetDeskInfoRequest>,
     ) -> Result<CallToolResult, McpError> {
-        // Parse UUID
-        let desk_uuid = uuid::Uuid::parse_str(&req.desk_uuid).map_err(|e| {
-            let error_msg = format!("Invalid desk UUID: {}", e);
-            tracing::error!(error = %error_msg, desk_uuid = %req.desk_uuid, "Failed to parse desk UUID");
-            McpError::invalid_params(error_msg, None)
-        })?;
+        let desk_account = req.desk_account.clone();
 
         // Get desk info
         let (account_id, network, market) = {
             let serve = self.serve.lock().await;
-            serve.get_desk_info(desk_uuid).await.map_err(|e| {
+            serve.get_desk_info(&desk_account).await.map_err(|e| {
                 let error_msg = format!("Failed to get desk info: {}", e);
                 tracing::error!(
                     error = %error_msg,
-                    desk_uuid = %desk_uuid,
+                    desk_account = %desk_account,
                     "Failed to get desk info"
                 );
                 McpError::internal_error(error_msg, None)
@@ -1366,14 +1091,14 @@ impl Mosaic {
 
         tracing::info!(
             tool = "get_desk_info",
-            desk_uuid = %desk_uuid,
+            desk_account = %desk_account,
             account_id = %account_id,
             "Retrieved desk info"
         );
 
         let response = GetDeskInfoResponse {
             success: true,
-            desk_uuid: desk_uuid.to_string(),
+            desk_account,
             account_id,
             network: match network {
                 Network::Testnet => "Testnet".to_string(),
@@ -1453,7 +1178,7 @@ impl ServerHandler for Mosaic {
                 .enable_tools()
                 .build(),
             server_info: Implementation::from_build_env(),
-            instructions: Some("Mosaic MCP server. Available tools: create_client_account, create_desk_account, create_liquidity_account, create_faucet_account, list_accounts, list_assets, list_orders, get_role_settings, update_role_settings, register_asset, client_sync, create_order, create_raw_note, get_account_status, consume_note, desk_push_note, get_desk_info, flush, version.".to_string()),
+            instructions: Some("Mosaic MCP server. Available tools: create_account_order, list_accounts, list_assets, list_orders, get_role_settings, update_role_settings, register_asset, client_sync, create_order, create_raw_note, get_account_status, consume_note, desk_push_note, get_desk_info, flush, version.".to_string()),
         }
     }
 

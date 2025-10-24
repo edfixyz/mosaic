@@ -18,9 +18,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { TrendingUp, TrendingDown, Loader2 } from 'lucide-react'
 import { use, useCallback, useEffect, useMemo, useState } from 'react'
 import { getOrImportAccount, getDeskInfo } from '@/lib/account'
-import { marketStorage } from '@/lib/marketStorage'
+import { marketStorage } from '@/lib/market-storage'
 import { callMcpTool, OrderPayload, RoleSettings, StoredOrderSummary } from '@/lib/mcp-tool'
-import type { AccountInfo, NetworkName } from '@/lib/mcp-tool'
+import type { ClientAccountInfo, NetworkName } from '@/lib/mcp-tool'
 
 const defaultMarket = { price: 1000, change: '+0.00%', positive: true, volume: '$0' }
 
@@ -86,9 +86,9 @@ function formatQuotes(quotes: { amount: bigint, price: bigint }[]): OrderBookEnt
 export default function MarketPage({
   params,
 }: {
-  params: Promise<{ marketId: string }>
+  params: Promise<{ deskId: string }>
 }) {
-  const { marketId } = use(params)
+  const { deskId: marketId } = use(params)
   const [base, setBase] = useState<string>('')
   const [quote, setQuote] = useState<string>('')
   const [baseFaucet, setBaseFaucet] = useState<string>('')
@@ -98,6 +98,7 @@ export default function MarketPage({
   const [lastPrice, setLastPrice] = useState<string>('-')
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [deskUrl, setDeskUrl] = useState<string>('')
   const [clientAccounts, setClientAccounts] = useState<ClientAccount[]>([])
   const [accountsLoading, setAccountsLoading] = useState(false)
   const [accountsError, setAccountsError] = useState<string | null>(null)
@@ -140,7 +141,7 @@ export default function MarketPage({
       setAccountsError(null)
       try {
         const result = await callMcpTool('list_accounts', {}, token)
-        const clients = (result.accounts as AccountInfo[])
+        const clients = (result.client_accounts as ClientAccountInfo[])
           .filter((acct) => acct.account_type === 'Client')
           .map<ClientAccount>((acct) => ({
             accountId: acct.account_id,
@@ -228,10 +229,28 @@ export default function MarketPage({
     }
 
     const payloadMap = payload as Record<string, unknown> | null
-    const payloadMarket =
-      payloadMap && typeof payloadMap['market'] === 'string'
-        ? (payloadMap['market'] as string)
-        : undefined
+
+    let payloadMarket: string | undefined
+    if (payloadMap) {
+      const rawMarket = payloadMap['market']
+      if (typeof rawMarket === 'string') {
+        payloadMarket = rawMarket
+      } else if (rawMarket && typeof rawMarket === 'object') {
+        const marketObj = rawMarket as Record<string, unknown>
+        const baseObj = marketObj['base'] as Record<string, unknown> | undefined
+        const quoteObj = marketObj['quote'] as Record<string, unknown> | undefined
+        const baseCode =
+          baseObj && typeof baseObj['code'] === 'string' ? (baseObj['code'] as string) : undefined
+        const quoteCode =
+          quoteObj && typeof quoteObj['code'] === 'string'
+            ? (quoteObj['code'] as string)
+            : undefined
+        if (baseCode && quoteCode) {
+          payloadMarket = `${baseCode}/${quoteCode}`
+        }
+      }
+    }
+
     const payloadSide =
       payloadMap && typeof payloadMap['side'] === 'string'
         ? (payloadMap['side'] as string)
@@ -343,7 +362,7 @@ export default function MarketPage({
         setAccessToken(token)
       }
 
-      await callMcpTool(
+      const createOrderResponse = await callMcpTool(
         'create_order',
         {
           network: targetAccount.network,
@@ -353,6 +372,12 @@ export default function MarketPage({
         },
         token
       )
+
+      if (!createOrderResponse.success) {
+        throw new Error('Failed to create desk note')
+      }
+
+      await postNoteToDesk(createOrderResponse.note)
 
       await loadOrders(token)
       setRequestModalOpen(false)
@@ -422,7 +447,7 @@ export default function MarketPage({
         setAccessToken(token)
       }
 
-      await callMcpTool(
+      const createOrderResponse = await callMcpTool(
         'create_order',
         {
           network: targetAccount.network,
@@ -432,6 +457,12 @@ export default function MarketPage({
         },
         token
       )
+
+      if (!createOrderResponse.success) {
+        throw new Error('Failed to create desk note')
+      }
+
+      await postNoteToDesk(createOrderResponse.note)
 
       await loadOrders(token)
       setLiquidityModalOpen(false)
@@ -453,6 +484,39 @@ export default function MarketPage({
   useEffect(() => {
     const loadMarketInfo = async () => {
       try {
+        let resolvedDeskUrl = ''
+
+        if (typeof window !== 'undefined') {
+          const storedMarkets = marketStorage.getMarkets()
+          const storedMarket = storedMarkets.find((entry) => entry.marketId === marketId)
+          if (storedMarket?.deskUrl) {
+            resolvedDeskUrl = storedMarket.deskUrl
+          }
+        }
+
+        try {
+          const marketInfoResponse = await fetch(`/desk/${marketId}`, {
+            headers: { Accept: 'application/json' },
+          })
+
+          if (marketInfoResponse.ok) {
+            const marketInfo = (await marketInfoResponse.json()) as { market_url?: string }
+            if (typeof marketInfo.market_url === 'string' && marketInfo.market_url.length > 0) {
+              resolvedDeskUrl = marketInfo.market_url
+            }
+          } else {
+            console.warn('Unable to fetch market metadata:', marketInfoResponse.status)
+          }
+        } catch (infoError) {
+          console.warn('Failed to retrieve market metadata:', infoError)
+        }
+
+        if (!resolvedDeskUrl && typeof window !== 'undefined') {
+          resolvedDeskUrl = window.location.href
+        }
+
+        setDeskUrl(resolvedDeskUrl)
+
         // Dynamically import the SDK
         const { WebClient, AccountId, Word, Felt } = await import('@demox-labs/miden-sdk')
 
@@ -507,6 +571,7 @@ export default function MarketPage({
             marketId,
             baseFaucet: deskInfo.pair.base.faucet,
             quoteFaucet: deskInfo.pair.quote.faucet,
+            deskUrl: resolvedDeskUrl,
           })
         } else {
           setError('Market not found or invalid market data')
@@ -559,9 +624,12 @@ export default function MarketPage({
       })
       .filter(({ details }) => {
         if (!marketSymbol) {
-          return true
+          return false
         }
-        return details.market ? details.market === marketSymbol : true
+        if (!details.market) {
+          return false
+        }
+        return details.market === marketSymbol
       })
   }, [orders, marketSymbol, parseOrderSummary])
 
@@ -574,6 +642,36 @@ export default function MarketPage({
     })
     return map
   }, [clientAccounts])
+
+  const postNoteToDesk = useCallback(
+    async (note: unknown) => {
+      if (!note) {
+        throw new Error('Missing desk note payload')
+      }
+
+      if (!deskUrl) {
+        throw new Error('Routing URL is not available for this market')
+      }
+
+      const sanitized = deskUrl.endsWith('/') ? deskUrl.slice(0, -1) : deskUrl
+      const endpoint = `${sanitized}/note`
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'omit',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ note }),
+      })
+
+      if (!response.ok) {
+        const message = await response.text().catch(() => '')
+        throw new Error(message || `Desk note submission failed (${response.status})`)
+      }
+    },
+    [deskUrl]
+  )
 
   const canRequestQuote = roleSettings?.is_client ?? false
   const canOfferLiquidity = roleSettings?.is_liquidity_provider ?? false
@@ -639,6 +737,21 @@ export default function MarketPage({
               >
                 {marketId} ↗
               </a>
+              <div className="mt-2 text-sm text-muted-foreground font-mono">
+                Routing URL:{' '}
+                {deskUrl ? (
+                  <a
+                    href={deskUrl}
+                    className="text-primary underline-offset-2 hover:underline break-all"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    {deskUrl}
+                  </a>
+                ) : (
+                  <span className="text-muted-foreground/80">Loading…</span>
+                )}
+              </div>
             </div>
 
             <Card className="p-6 bg-card border-border">

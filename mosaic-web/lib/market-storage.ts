@@ -5,6 +5,7 @@ export interface Market {
   marketId: string // bech32 market account ID
   baseFaucet: string // bech32 base faucet address
   quoteFaucet: string // bech32 quote faucet address
+  deskUrl: string // full Routing URL used for backend interactions
 }
 
 const STORAGE_KEY = 'mosaic_markets'
@@ -16,7 +17,22 @@ export const marketStorage = {
 
     try {
       const stored = localStorage.getItem(STORAGE_KEY)
-      return stored ? JSON.parse(stored) : []
+      if (!stored) {
+        return []
+      }
+
+      const parsed = JSON.parse(stored)
+      if (!Array.isArray(parsed)) {
+        return []
+      }
+
+      return parsed.map((market: Partial<Market>) => ({
+        pair: market.pair ?? '',
+        marketId: market.marketId ?? '',
+        baseFaucet: market.baseFaucet ?? '',
+        quoteFaucet: market.quoteFaucet ?? '',
+        deskUrl: market.deskUrl ?? '',
+      })) as Market[]
     } catch (error) {
       console.error('Failed to load markets from storage:', error)
       return []
@@ -30,8 +46,14 @@ export const marketStorage = {
     try {
       const markets = marketStorage.getMarkets()
 
-      // Check if market already exists
-      const existingIndex = markets.findIndex(m => m.marketId === market.marketId)
+      // Check if market already exists (prefer Routing URL as unique identifier)
+      const existingIndex = markets.findIndex(existing => {
+        if (existing.deskUrl && market.deskUrl) {
+          return existing.deskUrl === market.deskUrl
+        }
+        // Fallback for legacy entries that might not have a Routing URL persisted yet
+        return existing.marketId === market.marketId
+      })
 
       if (existingIndex >= 0) {
         // Update existing market
@@ -40,6 +62,8 @@ export const marketStorage = {
         // Add new market
         markets.push(market)
       }
+
+      console.log('[marketStorage.saveMarket] writing markets:', markets)
 
       localStorage.setItem(STORAGE_KEY, JSON.stringify(markets))
 
@@ -50,13 +74,13 @@ export const marketStorage = {
     }
   },
 
-  // Remove a market by marketId
-  removeMarket: (marketId: string): void => {
+  // Remove a market by Routing URL (routing URL)
+  removeMarket: (deskUrl: string): void => {
     if (typeof window === 'undefined') return
 
     try {
       const markets = marketStorage.getMarkets()
-      const filtered = markets.filter(m => m.marketId !== marketId)
+      const filtered = markets.filter(m => m.deskUrl !== deskUrl)
       localStorage.setItem(STORAGE_KEY, JSON.stringify(filtered))
 
       // Dispatch custom event for same-window updates
