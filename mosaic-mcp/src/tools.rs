@@ -465,14 +465,17 @@ impl Mosaic {
 
         {
             let serve = self.serve.lock().await;
-            let new_asset = mosaic_serve::asset_store::NewAsset {
+            let max_supply = if req.max_supply.trim().is_empty() {
+                None
+            } else {
+                Some(req.max_supply.as_str())
+            };
+            let new_asset = mosaic_serve::RegistryAsset {
                 symbol: &req.symbol,
                 account: &req.account,
-                max_supply: &req.max_supply,
                 decimals: req.decimals,
-                verified: req.verified,
-                owner: req.owner,
-                hidden: req.hidden,
+                max_supply,
+                owned: req.owner,
             };
 
             serve.register_asset(secret, new_asset).map_err(|e| {
@@ -655,14 +658,13 @@ impl Mosaic {
                     McpError::internal_error(error_msg, None)
                 })?;
 
-            let asset = mosaic_serve::asset_store::NewAsset {
+            let max_supply_string = req.max_supply.to_string();
+            let asset = mosaic_serve::RegistryAsset {
                 symbol: &req.token_symbol,
                 account: &account_id,
-                max_supply: &req.max_supply.to_string(),
                 decimals: req.decimals,
-                verified: true,
-                owner: true,
-                hidden: false,
+                max_supply: Some(max_supply_string.as_str()),
+                owned: true,
             };
 
             if let Err(err) = serve.register_asset(secret, asset) {

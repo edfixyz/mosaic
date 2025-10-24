@@ -1,6 +1,7 @@
 use mosaic_fi::note::{MosaicNote, MosaicNoteStatus};
 use mosaic_fi::{AccountType, Market};
 use mosaic_miden::client::ClientHandle;
+use mosaic_miden::store::AssetRecord;
 use mosaic_miden::{MidenTransactionId, Network};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -9,9 +10,15 @@ use uuid::Uuid;
 pub mod desk_store;
 use desk_store::DeskStore;
 pub mod asset_store;
-use asset_store::{
-    AssetStore, NewAsset as RegistryAsset, StoredAsset as RegistryStoredAsset, default_assets,
-};
+use asset_store::{StoredAsset as RegistryStoredAsset, default_assets};
+
+pub struct RegistryAsset<'a> {
+    pub symbol: &'a str,
+    pub account: &'a str,
+    pub decimals: u8,
+    pub max_supply: Option<&'a str>,
+    pub owned: bool,
+}
 
 /// Desk metadata cached in memory
 pub struct DeskMetadata {
@@ -24,7 +31,6 @@ pub struct DeskMetadata {
 pub struct Serve {
     store_path: PathBuf,
     desk_store_path: PathBuf,
-    asset_store_path: PathBuf,
     clients: HashMap<([u8; 32], Network), ClientHandle>,
     desks: HashMap<Uuid, DeskMetadata>,
 }
@@ -40,20 +46,9 @@ impl Serve {
         // Global desk store at the project root (parent of store_path)
         let desk_store_path = store_path.join("mosaic_top.sqlite3");
 
-        let asset_store_path = store_path.join("mosaic_assets.sqlite3");
-        let asset_store = AssetStore::open(&asset_store_path).map_err(|err| {
-            ServeError::InvalidPath(format!("Failed to open asset store: {}", err))
-        })?;
-        asset_store
-            .ensure_default_asset("__default__")
-            .map_err(|err| {
-                ServeError::InvalidPath(format!("Failed to seed default asset: {}", err))
-            })?;
-
         Ok(Serve {
             store_path,
             desk_store_path,
-            asset_store_path,
             clients: HashMap::new(),
             desks: HashMap::new(),
         })
@@ -283,6 +278,19 @@ impl Serve {
         bs58::encode(secret).into_string()
     }
 
+    fn network_from_account(account: &str) -> Result<Network, anyhow::Error> {
+        let (network_id, _) = miden_objects::address::Address::from_bech32(account)
+            .map_err(|e| anyhow::anyhow!("Invalid account '{}': {}", account, e))?;
+
+        Network::from_network_id(network_id).ok_or_else(|| {
+            anyhow::anyhow!(
+                "Unsupported network '{}' for account {}",
+                network_id.to_string(),
+                account
+            )
+        })
+    }
+
     fn client_path(&self, secret: [u8; 32], network: Network) -> PathBuf {
         let secret_str = Self::secret_to_string(secret);
         let network_prefix = match network {
@@ -291,10 +299,6 @@ impl Serve {
         };
         let dir_name = format!("{}_{}", network_prefix, secret_str);
         self.store_path.join(dir_name)
-    }
-
-    fn asset_store(&self) -> Result<AssetStore, anyhow::Error> {
-        Ok(AssetStore::open(&self.asset_store_path)?)
     }
 
     fn store_path(&self, secret: [u8; 32], network: Network) -> PathBuf {
@@ -340,9 +344,22 @@ impl Serve {
         secret: [u8; 32],
         asset: RegistryAsset<'_>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        let store = self.asset_store()?;
-        let user_key = Self::secret_to_string(secret);
-        store.insert_asset(&user_key, &asset)?;
+        let network = Self::network_from_account(asset.account)?;
+        let client_dir = self.client_path(secret, network);
+        Self::check_or_create(&client_dir)?;
+
+        let store_path = client_dir.join("mosaic.sqlite3");
+        let store = mosaic_miden::store::Store::new(&store_path)?;
+
+        let record = AssetRecord {
+            symbol: asset.symbol.to_string(),
+            account: asset.account.to_string(),
+            decimals: asset.decimals,
+            max_supply: asset.max_supply.map(|value| value.to_string()),
+            owned: asset.owned,
+        };
+
+        store.upsert_asset(&record)?;
         Ok(())
     }
 
@@ -350,9 +367,42 @@ impl Serve {
         &self,
         secret: [u8; 32],
     ) -> Result<Vec<RegistryStoredAsset>, Box<dyn std::error::Error>> {
-        let store = self.asset_store()?;
-        let user_key = Self::secret_to_string(secret);
-        Ok(store.list_assets_for_user(&user_key)?)
+        let mut assets_map: HashMap<String, RegistryStoredAsset> = HashMap::new();
+
+        for asset in default_assets() {
+            let key = format!("{}::{}", asset.account, asset.symbol);
+            assets_map.insert(key, asset);
+        }
+
+        for network in [Network::Testnet, Network::Localnet] {
+            let client_dir = self.client_path(secret, network);
+            if !client_dir.exists() {
+                continue;
+            }
+
+            let store_path = client_dir.join("mosaic.sqlite3");
+            let store = mosaic_miden::store::Store::new(&store_path)?;
+
+            for asset in store.list_assets()? {
+                let max_supply = asset.max_supply.clone().unwrap_or_else(|| "0".to_string());
+
+                let key = format!("{}::{}", asset.account, asset.symbol);
+                assets_map.insert(
+                    key,
+                    RegistryStoredAsset {
+                        symbol: asset.symbol,
+                        account: asset.account,
+                        max_supply,
+                        decimals: asset.decimals,
+                        verified: asset.owned,
+                        owner: asset.owned,
+                        hidden: false,
+                    },
+                );
+            }
+        }
+
+        Ok(assets_map.into_values().collect())
     }
 
     pub fn list_default_assets(&self) -> Vec<RegistryStoredAsset> {
