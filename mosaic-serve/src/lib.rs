@@ -285,7 +285,7 @@ impl Serve {
         Network::from_network_id(network_id).ok_or_else(|| {
             anyhow::anyhow!(
                 "Unsupported network '{}' for account {}",
-                network_id.to_string(),
+                network_id,
                 account
             )
         })

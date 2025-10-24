@@ -2,6 +2,9 @@ use crate::Network;
 use rusqlite::{Connection, OptionalExtension, Result as SqliteResult, ffi, params};
 use std::path::Path;
 
+type AccountRow = (String, String, String, Option<String>);
+type AccountByNetworkRow = (String, String, Option<String>);
+
 /// Account and asset storage using SQLite
 pub struct Store {
     conn: Connection,
@@ -22,7 +25,7 @@ impl Store {
         let mut conn = Connection::open(path)?;
 
         // Enforce foreign key constraints and ensure schema exists
-        conn.pragma_update(None, "foreign_keys", &true)?;
+        conn.pragma_update(None, "foreign_keys", true)?;
         ensure_schema(&mut conn)?;
 
         Ok(Store { conn })
@@ -50,7 +53,7 @@ impl Store {
     }
 
     /// List all accounts
-    pub fn list_accounts(&self) -> SqliteResult<Vec<(String, String, String, Option<String>)>> {
+    pub fn list_accounts(&self) -> SqliteResult<Vec<AccountRow>> {
         let mut stmt = self
             .conn
             .prepare("SELECT id, network, typ, name FROM accounts ORDER BY id")?;
@@ -73,7 +76,7 @@ impl Store {
     pub fn list_accounts_by_network(
         &self,
         network: Network,
-    ) -> SqliteResult<Vec<(String, String, Option<String>)>> {
+    ) -> SqliteResult<Vec<AccountByNetworkRow>> {
         let network_str = match network {
             Network::Testnet => "Testnet",
             Network::Localnet => "Localnet",
@@ -179,105 +182,6 @@ impl Store {
         )?;
 
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_store_operations() {
-        let store = Store::new(":memory:").unwrap();
-
-        // Insert accounts
-        store
-            .insert_account(
-                "test_account_1",
-                Network::Testnet,
-                "Client",
-                Some("Primary"),
-            )
-            .unwrap();
-        store
-            .insert_account("test_account_2", Network::Localnet, "Desk", None)
-            .unwrap();
-
-        // List all accounts
-        let accounts = store.list_accounts().unwrap();
-        assert_eq!(accounts.len(), 2);
-        assert_eq!(accounts[0].3.as_deref(), Some("Primary"));
-
-        // List by network
-        let testnet_accounts = store.list_accounts_by_network(Network::Testnet).unwrap();
-        assert_eq!(testnet_accounts.len(), 1);
-        assert_eq!(testnet_accounts[0].0, "test_account_1");
-        assert_eq!(testnet_accounts[0].2.as_deref(), Some("Primary"));
-
-        // Delete an account
-        store.delete_account("test_account_1").unwrap();
-        let accounts = store.list_accounts().unwrap();
-        assert_eq!(accounts.len(), 1);
-
-        // Delete all accounts
-        store.delete_all_accounts().unwrap();
-        let accounts = store.list_accounts().unwrap();
-        assert_eq!(accounts.len(), 0);
-    }
-
-    #[test]
-    fn test_asset_operations() {
-        let store = Store::new(":memory:").unwrap();
-
-        // Linked asset without owning account should succeed
-        let linked = AssetRecord {
-            symbol: "USDC".to_string(),
-            account: "mtst_linked".to_string(),
-            decimals: 6,
-            max_supply: Some("0".to_string()),
-            owned: false,
-        };
-        store.upsert_asset(&linked).unwrap();
-
-        // Owning asset without corresponding account should fail due to FK
-        let owned_missing_account = AssetRecord {
-            symbol: "MID".to_string(),
-            account: "mtst_owned".to_string(),
-            decimals: 8,
-            max_supply: Some("1000000".to_string()),
-            owned: true,
-        };
-        match store.upsert_asset(&owned_missing_account).unwrap_err() {
-            rusqlite::Error::SqliteFailure(err, Some(_))
-                if err.code == ffi::ErrorCode::ConstraintViolation => {}
-            err => panic!("Unexpected error: {err}"),
-        }
-
-        // Once the account exists, insert succeeds
-        store
-            .insert_account("mtst_owned", Network::Testnet, "Faucet", Some("MID faucet"))
-            .unwrap();
-        store.upsert_asset(&owned_missing_account).unwrap();
-
-        // List assets
-        let assets = store.list_assets().unwrap();
-        assert_eq!(assets.len(), 2);
-        assert!(
-            assets
-                .iter()
-                .any(|asset| asset.symbol == "USDC" && !asset.owned)
-        );
-        assert!(
-            assets
-                .iter()
-                .any(|asset| asset.symbol == "MID" && asset.owned)
-        );
-
-        // Delete asset
-        store.delete_asset("USDC", "mtst_linked").unwrap();
-        let assets = store.list_assets().unwrap();
-        assert_eq!(assets.len(), 1);
-        assert_eq!(assets[0].symbol, "MID");
     }
 }
 
@@ -391,4 +295,103 @@ fn assets_has_foreign_key(conn: &Connection) -> SqliteResult<bool> {
     let mut stmt = conn.prepare("PRAGMA foreign_key_list(assets)")?;
     let mut rows = stmt.query([])?;
     Ok(rows.next()?.is_some())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_store_operations() {
+        let store = Store::new(":memory:").unwrap();
+
+        // Insert accounts
+        store
+            .insert_account(
+                "test_account_1",
+                Network::Testnet,
+                "Client",
+                Some("Primary"),
+            )
+            .unwrap();
+        store
+            .insert_account("test_account_2", Network::Localnet, "Desk", None)
+            .unwrap();
+
+        // List all accounts
+        let accounts = store.list_accounts().unwrap();
+        assert_eq!(accounts.len(), 2);
+        assert_eq!(accounts[0].3.as_deref(), Some("Primary"));
+
+        // List by network
+        let testnet_accounts = store.list_accounts_by_network(Network::Testnet).unwrap();
+        assert_eq!(testnet_accounts.len(), 1);
+        assert_eq!(testnet_accounts[0].0, "test_account_1");
+        assert_eq!(testnet_accounts[0].2.as_deref(), Some("Primary"));
+
+        // Delete an account
+        store.delete_account("test_account_1").unwrap();
+        let accounts = store.list_accounts().unwrap();
+        assert_eq!(accounts.len(), 1);
+
+        // Delete all accounts
+        store.delete_all_accounts().unwrap();
+        let accounts = store.list_accounts().unwrap();
+        assert_eq!(accounts.len(), 0);
+    }
+
+    #[test]
+    fn test_asset_operations() {
+        let store = Store::new(":memory:").unwrap();
+
+        // Linked asset without owning account should succeed
+        let linked = AssetRecord {
+            symbol: "USDC".to_string(),
+            account: "mtst_linked".to_string(),
+            decimals: 6,
+            max_supply: Some("0".to_string()),
+            owned: false,
+        };
+        store.upsert_asset(&linked).unwrap();
+
+        // Owning asset without corresponding account should fail due to validation
+        let owned_missing_account = AssetRecord {
+            symbol: "MID".to_string(),
+            account: "mtst_owned".to_string(),
+            decimals: 8,
+            max_supply: Some("1000000".to_string()),
+            owned: true,
+        };
+        match store.upsert_asset(&owned_missing_account).unwrap_err() {
+            rusqlite::Error::SqliteFailure(err, Some(_))
+                if err.code == ffi::ErrorCode::ConstraintViolation => {}
+            err => panic!("Unexpected error: {err}"),
+        }
+
+        // Once the account exists, insert succeeds
+        store
+            .insert_account("mtst_owned", Network::Testnet, "Faucet", Some("MID faucet"))
+            .unwrap();
+        store.upsert_asset(&owned_missing_account).unwrap();
+
+        // List assets
+        let assets = store.list_assets().unwrap();
+        assert_eq!(assets.len(), 2);
+        assert!(
+            assets
+                .iter()
+                .any(|asset| asset.symbol == "USDC" && !asset.owned)
+        );
+        assert!(
+            assets
+                .iter()
+                .any(|asset| asset.symbol == "MID" && asset.owned)
+        );
+
+        // Delete asset
+        store.delete_asset("USDC", "mtst_linked").unwrap();
+        let assets = store.list_assets().unwrap();
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].symbol, "MID");
+    }
 }
