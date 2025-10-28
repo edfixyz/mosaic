@@ -14,42 +14,25 @@ export type MarketDescription = {
   quote: MarketCurrency
 }
 
-export type CreateClientAccountResponse = {
-  success: boolean
-  account_id: string
-  name?: string
-}
-
-export type CreateDeskAccountResponse = {
-  success: boolean
-  account_id: string
-  desk_uuid: string
-  market: MarketDescription
-}
-
-export type CreateLiquidityAccountResponse = {
-  success: boolean
-  account_id: string
-}
-
-export type CreateFaucetAccountResponse = {
-  success: boolean
-  account_id: string
-  token_symbol: string
-  decimals: number
-  max_supply: number
-}
-
-export type AccountInfo = {
+export type ClientAccountInfo = {
   account_id: string
   network: string
   account_type: string
   name?: string | null
 }
 
+export type DeskAccountInfo = {
+  account_id: string
+  network: string
+  market: MarketDescription
+  owner_account: string
+  market_url: string
+}
+
 export type ListAccountsResponse = {
   success: boolean
-  accounts: AccountInfo[]
+  client_accounts: ClientAccountInfo[]
+  desk_accounts: DeskAccountInfo[]
 }
 
 export type ClientSyncResponse = {
@@ -90,13 +73,13 @@ export type ConsumeNoteResponse = {
 
 export type DeskPushNoteResponse = {
   success: boolean
-  desk_uuid: string
+  desk_account: string
   note_id: number
 }
 
 export type GetDeskInfoResponse = {
   success: boolean
-  desk_uuid: string
+  desk_account: string
   account_id: string
   network: string
   market: MarketDescription
@@ -225,27 +208,108 @@ export type OrderPayload =
   | FundAccountOrder
   | OrderUnitVariant
 
-export type ToolDefinitions = {
-  create_client_account: {
-    args: { network: NetworkName; name?: string }
-    result: CreateClientAccountResponse
+type AccountOrderCreateClient = {
+  CreateClient: {
+    network: NetworkName
+    name?: string | null
   }
-  create_desk_account: {
-    args: { network: NetworkName; market: MarketDescription }
-    result: CreateDeskAccountResponse
+}
+
+type AccountOrderCreateDesk = {
+  CreateDesk: {
+    network: NetworkName
+    market: MarketDescription
+    owner_account: string
   }
-  create_liquidity_account: {
-    args: { network: NetworkName }
-    result: CreateLiquidityAccountResponse
+}
+
+type AccountOrderCreateFaucet = {
+  CreateFaucet: {
+    network: NetworkName
+    token_symbol: string
+    decimals: number
+    max_supply: number
   }
-  create_faucet_account: {
-    args: {
-      token_symbol: string
-      decimals: number
-      max_supply: number
-      network: NetworkName
+}
+
+type AccountOrderCreateLiquidity = {
+  CreateLiquidity: {
+    network: NetworkName
+  }
+}
+
+type AccountOrderActivateDesk = {
+  ActivateDesk: {
+    desk_account: string
+    owner_account: string
+  }
+}
+
+type AccountOrderDeactivateDesk = {
+  DeactivateDesk: {
+    desk_account: string
+    owner_account: string
+  }
+}
+
+export type AccountOrderPayload =
+  | AccountOrderCreateClient
+  | AccountOrderCreateDesk
+  | AccountOrderCreateFaucet
+  | AccountOrderCreateLiquidity
+  | AccountOrderActivateDesk
+  | AccountOrderDeactivateDesk
+
+export type AccountOrderResultPayload =
+  | {
+      Client: {
+        account_id: string
+        name?: string | null
+      }
     }
-    result: CreateFaucetAccountResponse
+  | {
+      Desk: {
+        account_id: string
+        market: MarketDescription
+        owner_account: string
+        market_url: string
+      }
+    }
+  | {
+      DeskActivated: {
+        desk_account: string
+        owner_account: string
+      }
+    }
+  | {
+      DeskDeactivated: {
+        desk_account: string
+        owner_account: string
+      }
+    }
+  | {
+      Faucet: {
+        account_id: string
+        token_symbol: string
+        decimals: number
+        max_supply: number
+      }
+    }
+  | {
+      Liquidity: {
+        account_id: string
+      }
+    }
+
+export type CreateAccountOrderResponse = {
+  success: boolean
+  result: AccountOrderResultPayload
+}
+
+export type ToolDefinitions = {
+  create_account_order: {
+    args: { order: AccountOrderPayload }
+    result: CreateAccountOrderResponse
   }
   list_accounts: {
     args: EmptyArgs
@@ -305,14 +369,14 @@ export type ToolDefinitions = {
   }
   desk_push_note: {
     args: {
-      desk_uuid: string
+      desk_account: string
       note: unknown
     }
     result: DeskPushNoteResponse
   }
   get_desk_info: {
     args: {
-      desk_uuid: string
+      desk_account: string
     }
     result: GetDeskInfoResponse
   }

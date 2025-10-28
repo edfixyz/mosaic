@@ -1,4 +1,4 @@
-use crate::{MidenTransactionId, Network};
+use crate::{MidenTransactionId, Network, symbol::encode_symbol};
 use miden_client::{
     Client,
     account::{AccountHeader, AccountId, component::BasicWallet},
@@ -9,17 +9,31 @@ use miden_client::{
     rpc::{Endpoint, TonicRpcClient},
     store::{AccountRecord, AccountStatus},
     sync::SyncSummary,
+    transaction::TransactionKernel,
 };
-use miden_lib::account::{auth::AuthRpoFalcon512, faucets::BasicFungibleFaucet};
+use miden_lib::account::{
+    auth::{AuthRpoFalcon512, NoAuth},
+    faucets::BasicFungibleFaucet,
+};
 use miden_objects::{
-    Felt,
-    account::{AccountBuilder, AccountStorageMode, AccountType as MidenAccountType},
+    Felt, Word,
+    account::{
+        AccountBuilder, AccountComponent, AccountStorageMode, AccountType as MidenAccountType,
+        StorageMap, StorageSlot,
+    },
+    address::{AccountIdAddress, Address, AddressInterface},
+    assembly::Assembler,
     asset::TokenSymbol,
 };
-use rand::{RngCore, rngs::StdRng};
-use std::path::{Path, PathBuf};
+use rand::{Rng, RngCore, rngs::StdRng};
 use std::sync::Arc;
+use std::{
+    env,
+    path::{Path, PathBuf},
+};
 use tokio::sync::{mpsc, oneshot};
+
+type DeskAccountArtifacts = (miden_client::account::Account, SecretKey, Option<String>);
 
 pub async fn create_client(
     path: &Path,
@@ -66,6 +80,14 @@ pub enum ClientCommand {
         decimals: u8,
         max_supply: u64,
         respond_to: oneshot::Sender<Result<(miden_client::account::Account, SecretKey), String>>,
+    },
+    CreateDeskAccount {
+        quote_symbol: String,
+        quote_account: String,
+        base_symbol: String,
+        base_account: String,
+        owner_account: AccountId,
+        respond_to: oneshot::Sender<Result<DeskAccountArtifacts, String>>,
     },
     GetAccount {
         account_id: AccountId,
@@ -184,6 +206,25 @@ impl ClientHandle {
                     .await;
                     let _ = respond_to.send(result);
                 }
+                ClientCommand::CreateDeskAccount {
+                    quote_symbol,
+                    quote_account,
+                    base_symbol,
+                    base_account,
+                    owner_account,
+                    respond_to,
+                } => {
+                    let result = Self::create_desk_account_impl(
+                        &mut client,
+                        &base_symbol,
+                        &base_account,
+                        &quote_symbol,
+                        &quote_account,
+                        owner_account,
+                    )
+                    .await;
+                    let _ = respond_to.send(result);
+                }
                 ClientCommand::GetAccount {
                     account_id,
                     respond_to,
@@ -296,6 +337,157 @@ impl ClientHandle {
         client.sync_state().await?;
 
         Ok((miden_account, key_pair))
+    }
+
+    /// Implementation of faucet account creation logic
+    async fn create_desk_account_impl(
+        client: &mut Client<FilesystemKeyStore<StdRng>>,
+        base_symbol: &str,
+        base_account: &str,
+        quote_symbol: &str,
+        quote_account: &str,
+        owner_account: AccountId,
+    ) -> Result<DeskAccountArtifacts, String> {
+        let _ = owner_account;
+        if base_account == quote_account {
+            return Err("Base and quote accounts must be different".to_string());
+        }
+
+        let (base_network_id, base_address) = Address::from_bech32(base_account)
+            .map_err(|e| format!("Invalid base account '{}': {}", base_account, e))?;
+        let base_account_id = match base_address {
+            Address::AccountId(addr) => addr.id(),
+            _ => return Err("Base address must resolve to an account".to_string()),
+        };
+
+        let (quote_network_id, quote_address) = Address::from_bech32(quote_account)
+            .map_err(|e| format!("Invalid quote account '{}': {}", quote_account, e))?;
+        let quote_account_id = match quote_address {
+            Address::AccountId(addr) => addr.id(),
+            _ => return Err("Quote address must resolve to an account".to_string()),
+        };
+
+        if base_network_id != quote_network_id {
+            return Err(format!(
+                "Base and quote accounts must be on the same network ({} vs {})",
+                base_network_id, quote_network_id
+            ));
+        }
+
+        let network = Network::from_network_id(base_network_id)
+            .ok_or_else(|| format!("Unsupported network id {}", base_network_id))?;
+
+        tracing::info!(
+            base_symbol,
+            base_account,
+            quote_symbol,
+            quote_account,
+            ?network,
+            "Creating desk account"
+        );
+
+        let key_pair = SecretKey::with_rng(client.rng());
+        let mut init_seed = [0u8; 32];
+        client.rng().fill_bytes(&mut init_seed);
+        let assembler: Assembler = TransactionKernel::assembler().with_debug_mode(true);
+
+        let book_code = include_str!("../../mosaic-fi/masm/accounts/book.masm").to_string();
+
+        let zero_word = || Word::from([Felt::new(0); 4]);
+        let base_symbol_upper = base_symbol.to_ascii_uppercase();
+        let quote_symbol_upper = quote_symbol.to_ascii_uppercase();
+
+        let base_symbol_word = Word::from(
+            encode_symbol(&base_symbol_upper, &base_account_id)
+                .map_err(|e| format!("Invalid base symbol: {}", e))?,
+        );
+        let quote_symbol_word = Word::from(
+            encode_symbol(&quote_symbol_upper, &quote_account_id)
+                .map_err(|e| format!("Invalid quote symbol: {}", e))?,
+        );
+
+        let book_component = AccountComponent::compile(
+            book_code,
+            assembler,
+            vec![
+                StorageSlot::Value(zero_word()),
+                StorageSlot::Value(base_symbol_word),
+                StorageSlot::Value(quote_symbol_word),
+                StorageSlot::Value(zero_word()),
+                StorageSlot::Value(zero_word()), // Status
+                // Sell
+                StorageSlot::Value(zero_word()),
+                StorageSlot::Map(StorageMap::new()),
+                StorageSlot::Value(zero_word()),
+                StorageSlot::Value(zero_word()),
+                StorageSlot::Value(zero_word()),
+                // Buy
+                StorageSlot::Value(zero_word()),
+                StorageSlot::Map(StorageMap::new()),
+                StorageSlot::Value(zero_word()),
+                StorageSlot::Value(zero_word()),
+                StorageSlot::Value(zero_word()),
+            ],
+        )
+        .map_err(|e| format!("Failed to compile desk component: {}", e))?
+        .with_supports_all_types();
+
+        let (book_contract, book_seed) = AccountBuilder::new(init_seed)
+            .account_type(MidenAccountType::RegularAccountImmutableCode)
+            .storage_mode(AccountStorageMode::Public)
+            .with_component(BasicWallet)
+            .with_component(book_component)
+            .with_auth_component(NoAuth)
+            .build()
+            .map_err(|e| format!("Failed to build desk account: {}", e))?;
+
+        client
+            .add_account(&book_contract, Some(book_seed), false)
+            .await
+            .map_err(|e| format!("Failed to add desk account: {}", e))?;
+        client.sync_state().await?;
+
+        // Workaround Start ===============================================================================================
+        let abstract_note = crate::note::MidenAbstractNote {
+            version: "MOSAIC 2025.10 MIDEN 0.11".to_string(),
+            note_type: crate::note::NoteType::Private,
+            program: include_str!("../../mosaic-fi/masm/notes/desk_update_status.masm").to_string(),
+            libraries: vec![(
+                "external_contract::book".to_string(),
+                include_str!("../../mosaic-fi/masm/accounts/book.masm").to_string(),
+            )],
+        };
+        let intent: [u64; 4] = [
+            client.rng().random(),
+            client.rng().random(),
+            client.rng().random(),
+            client.rng().random(),
+        ];
+        let inputs = vec![
+            ("intent".to_string(), crate::note::Value::Word(intent)),
+            ("status".to_string(), crate::note::Value::Word([1, 1, 1, 1])),
+        ];
+        let note = crate::note::compile_note(abstract_note, owner_account, zero_word(), inputs)
+            .map_err(|e| format!("Failed to compile note: {}", e))?;
+        let _ = crate::note::commit_note(client, owner_account, &note)
+            .await
+            .map_err(|e| format!("Failed to commit the note: {}", e))?;
+        client.sync_state().await?;
+        Self::consume_note_impl(client, book_contract.id(), &note.miden_note_hex)
+            .await
+            .map_err(|e| format!("Failed to consume note: {}", e))?;
+        // Workaround End ===============================================================================================
+
+        let account_id = book_contract.id();
+        let address = AccountIdAddress::new(account_id, AddressInterface::Unspecified);
+        let network_id = network.to_network_id();
+        let bech32 = Address::from(address).to_bech32(network_id);
+
+        let market_url = env::var("MOSAIC_SERVER")
+            .ok()
+            .map(|base| format!("{}/desk/{}", base.trim_end_matches('/'), bech32));
+
+        Ok((book_contract, key_pair, market_url))
     }
 
     /// Implementation of note commitment logic
@@ -415,6 +607,7 @@ impl ClientHandle {
         client.submit_transaction(tx_result).await.map_err(|e| {
             tracing::error!(
                 error = %e,
+                error_debug = ?e,
                 transaction_id = %tx_id,
                 account_id = %account_id,
                 note_id = %note_id,
@@ -571,6 +764,40 @@ impl ClientHandle {
             .map_err(|e| format!("Failed to store key: {}", e))?;
 
         Ok(account)
+    }
+
+    /// Create a new desk account in the client
+    /// Returns the account (the secret key is automatically stored in the keystore)
+    pub async fn create_desk_account(
+        &self,
+        base_symbol: String,
+        base_account: String,
+        quote_symbol: String,
+        quote_account: String,
+        owner_account: AccountId,
+    ) -> Result<(miden_client::account::Account, Option<String>), String> {
+        let (respond_to, response_rx) = oneshot::channel();
+
+        self.command_tx
+            .send(ClientCommand::CreateDeskAccount {
+                quote_symbol,
+                quote_account,
+                base_symbol,
+                base_account,
+                owner_account,
+                respond_to,
+            })
+            .map_err(|_| "Client thread has shut down".to_string())?;
+
+        let (account, key_pair, market_url) = response_rx
+            .await
+            .map_err(|_| "Client thread dropped response".to_string())??;
+
+        self.keystore
+            .add_key(&AuthSecretKey::RpoFalcon512(key_pair))
+            .map_err(|e| format!("Failed to store key: {}", e))?;
+
+        Ok((account, market_url))
     }
 
     /// Get an account by ID from the client store

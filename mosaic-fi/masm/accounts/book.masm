@@ -6,20 +6,35 @@ const.CONFIG_VERSION = 0
 const.CONFIG_BASE = 1
 const.CONFIG_QUOTE = 2
 const.CONFIG_NAME = 3
-const.CONFIG_RESERVED = 4
+const.CONFIG_STATUS = 4
 
 # Offsets
 const.COUNTER_OFFSET = 0
 const.BOOK_OFFSET = 1
 const.BOOK_HEAD_OFFSET = 2
-const.BOOK_RESERVED0_SELL = 3
-const.BOOK_RESERVED1_SELL = 4
+const.BOOK_RESERVED0_3 = 3
+const.BOOK_RESERVED1_4 = 4
 
 const.OFFSET_SELL = 5
 const.OFFSET_BUY = 10
 
 # Book slot format: map [0, 0, 0, this_id] -> [previous_id, next_id, price, amount]
 # Book head slot format: [zero, zero, zero, this_id]
+
+proc.check_status
+    # => [...]
+
+    push.CONFIG_STATUS exec.account::get_item
+    # => [STATUS, ...]
+
+    padw eqw
+
+    assertz.err="Desk is not enabled"
+
+    dropw dropw
+
+    # => [...]
+end
 
 proc.compute_slot
     # => [offset]
@@ -40,11 +55,28 @@ proc.compute_slot
 end
 
 #
+# Update status
+#
+#
+export.update_status
+    # => [STATUS]
+
+    push.CONFIG_STATUS exec.account::set_item
+    # => [OLD_STATUS]
+
+    dropw
+    # => []
+end
+
+
+#
 # Insert an offer
 #   TODO: store INTENT_UUID
 #
 export.insert_offer
     # => [side, INTENT_UUID, price, amount]
+
+    exec.check_status
 
     mem_store.0
     # => [INTENT_UUID, price, amount]

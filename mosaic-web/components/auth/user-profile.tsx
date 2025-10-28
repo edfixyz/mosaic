@@ -5,7 +5,7 @@ import { LoginButton } from './login-button';
 import { LogoutButton } from './logout-button';
 import { Button } from '@/components/ui/button';
 import { ensureMCPConnection, resetMCPSession } from '@/lib/mcp-client';
-import { callMcpTool } from '@/lib/mcp-tool';
+import Link from 'next/link'
 
 interface User {
   email?: string;
@@ -59,26 +59,6 @@ export function UserProfile() {
     };
   }, [user]);
 
-  const handleCheckStatus = async () => {
-    try {
-      console.log('🔍 Fetching accounts...');
-      const tokenRes = await fetch('/api/auth/token');
-      const tokenData = await tokenRes.json();
-
-      if (!tokenData.accessToken) {
-        console.error('❌ No access token received');
-        return;
-      }
-
-      const result = await callMcpTool('list_accounts', {}, tokenData.accessToken);
-
-      console.log('📊 Accounts:', result);
-      console.table(result);
-    } catch (error) {
-      console.error('❌ Error calling MCP:', error);
-    }
-  };
-
   if (isLoading) return <div>Loading...</div>;
 
   if (user) {
@@ -87,8 +67,8 @@ export function UserProfile() {
         <span className="text-sm text-muted-foreground">
           {user.email || user.name}
         </span>
-        <Button variant="outline" onClick={handleCheckStatus}>
-          Check Status
+        <Button variant="outline" asChild>
+          <Link href="/settings">Settings</Link>
         </Button>
         <LogoutButton />
       </div>

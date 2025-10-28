@@ -1,12 +1,12 @@
 import { auth0 } from '@/lib/auth0'
 import { redirect } from 'next/navigation'
-import { WorkbenchClient } from './workbench-client'
+import { SettingsClient } from './settings-client'
 
-export default async function WorkbenchPage() {
+export default async function SettingsPage() {
   const session = await auth0.getSession()
 
   if (!session) {
-    redirect('/api/auth/login?returnTo=/workbench')
+    redirect('/api/auth/login?returnTo=/settings')
   }
 
   return (
@@ -16,14 +16,14 @@ export default async function WorkbenchPage() {
           className="text-4xl font-serif mb-2 text-primary"
           style={{ fontFamily: 'var(--font-playfair)' }}
         >
-          Workbench
+          Settings
         </h1>
         <p className="text-muted-foreground">
-          Manage your assets and create new faucets
+          Manage your desks, assets, and market access configuration.
         </p>
       </div>
 
-      <WorkbenchClient />
+      <SettingsClient />
     </div>
   )
 }

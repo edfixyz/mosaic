@@ -3,7 +3,7 @@
 import type React from "react"
 
 import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import { useState, useEffect } from "react"
 import { Button } from "@/components/ui/button"
 import {
@@ -17,15 +17,18 @@ import {
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Plus, X, AlertTriangle } from "lucide-react"
-import { marketStorage, type Market } from "@/lib/marketStorage"
+import { marketStorage, type Market } from "@/lib/market-storage"
 
 export function Sidebar() {
   const pathname = usePathname()
+  const router = useRouter()
   const [markets, setMarkets] = useState<Market[]>([])
   const [open, setOpen] = useState(false)
-  const [marketId, setMarketId] = useState("")
+  const [marketUrl, setMarketUrl] = useState("")
+  const [marketError, setMarketError] = useState<string | null>(null)
+  const [addingMarket, setAddingMarket] = useState(false)
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false)
-  const [marketToDelete, setMarketToDelete] = useState<string | null>(null)
+  const [marketToDelete, setMarketToDelete] = useState<Market | null>(null)
 
   // Load markets from localStorage on mount and listen for changes
   useEffect(() => {
@@ -46,43 +49,122 @@ export function Sidebar() {
     }
   }, [])
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
 
-    // Validate Miden address format
-    const midenAddressPattern = /^[a-z]{4}1[a-z0-9]+$/
-    if (!midenAddressPattern.test(marketId)) {
-      alert("Invalid Miden address format. Please enter a valid bech32 address.")
+    setMarketError(null)
+
+    if (!marketUrl.trim()) {
+      setMarketError("Enter a market URL.")
       return
     }
 
-    // Navigate to the market page - it will auto-add to the list when loaded
-    window.location.href = `/market/${marketId}`
-    setMarketId("")
-    setOpen(false)
+    let parsedUrl: URL
+    try {
+      parsedUrl = new URL(marketUrl.trim())
+    } catch {
+      setMarketError("Invalid URL. Please enter a fully-qualified URL such as https://host/desk/123.")
+      return
+    }
+
+    setAddingMarket(true)
+
+    try {
+      const response = await fetch(parsedUrl.toString(), {
+        headers: {
+          Accept: "application/json",
+        },
+      })
+
+      if (!response.ok) {
+        throw new Error(`Server responded with status ${response.status}`)
+      }
+
+      const payload = await response.json()
+
+      const expectedFields = ["desk_account", "base_account", "quote_account", "market_url", "owner_account"] as const
+      for (const field of expectedFields) {
+        if (typeof payload[field] !== "string" || payload[field].trim().length === 0) {
+          throw new Error(`Market payload missing '${field}'`)
+        }
+      }
+
+      const deskAccount: string = payload.desk_account
+      const baseAccount: string = payload.base_account
+      const quoteAccount: string = payload.quote_account
+
+      const { WebClient, AccountId, Word, Felt } = await import("@demox-labs/miden-sdk")
+      const { getOrImportAccount, getDeskInfo } = await import("@/lib/account")
+
+      const client = await WebClient.createClient()
+
+      try {
+        await client.syncState()
+      } catch (syncError) {
+        console.warn("Sync state failed:", syncError)
+      }
+
+      const account = await getOrImportAccount(client, AccountId, deskAccount)
+      if (!account) {
+        throw new Error("Desk account not found on the network.")
+      }
+
+      const deskInfo = getDeskInfo(Word, Felt, account)
+      if (!deskInfo) {
+        throw new Error("Unable to decode desk information from account storage.")
+      }
+
+      // if (deskInfo.pair.base.faucet !== baseAccount || deskInfo.pair.quote.faucet !== quoteAccount) {
+      //   throw new Error("Desk metadata mismatch between remote response and on-chain data.")
+      // }
+
+      marketStorage.saveMarket({
+        pair: `${deskInfo.pair.base.symbol}/${deskInfo.pair.quote.symbol}`,
+        marketId: deskAccount,
+        baseFaucet: baseAccount,
+        quoteFaucet: quoteAccount,
+        deskUrl: payload.market_url,
+      })
+
+      setOpen(false)
+      setMarketUrl("")
+      router.push(`/desk/${deskAccount}`)
+    } catch (error) {
+      console.error("Failed to add desk:", error)
+      setMarketError(
+        error instanceof Error
+          ? error.message
+          : "Unable to reach the provided Routing URL. Verify the link and try again."
+      )
+    } finally {
+      setAddingMarket(false)
+    }
   }
 
-  const handleRemoveMarket = (e: React.MouseEvent, marketId: string) => {
+  const handleRemoveMarket = (e: React.MouseEvent, market: Market) => {
     e.preventDefault()
     e.stopPropagation()
 
-    setMarketToDelete(marketId)
+    setMarketToDelete(market)
     setDeleteDialogOpen(true)
   }
 
   const confirmRemoveMarket = () => {
     if (!marketToDelete) return
 
-    // Check if we're currently on this market's page
-    const marketPath = `/market/${marketToDelete}`
+    const marketPath = `/desk/${marketToDelete.marketId}`
     const isCurrentPage = pathname === marketPath
 
-    marketStorage.removeMarket(marketToDelete)
-    setMarkets(marketStorage.getMarkets())
+    marketStorage.removeMarket(marketToDelete.deskUrl)
+    const updatedMarkets = marketStorage.getMarkets()
+    setMarkets(updatedMarkets)
 
-    // Navigate to home if we're on the removed market's page
     if (isCurrentPage) {
-      window.location.href = '/'
+      if (updatedMarkets.length > 0) {
+        void router.push(`/desk/${updatedMarkets[0].marketId}`)
+      } else {
+        window.location.href = '/'
+      }
     }
 
     setDeleteDialogOpen(false)
@@ -100,10 +182,10 @@ export function Sidebar() {
               <p className="text-sm text-muted-foreground px-3 py-2">No markets yet. Visit a market to add it here.</p>
             ) : (
               markets.map((market) => {
-                const marketPath = `/market/${market.marketId}`
+                const marketPath = `/desk/${market.marketId}`
                 const isActive = pathname === marketPath
                 return (
-                  <div key={market.marketId} className="relative group">
+                  <div key={market.deskUrl || `${market.marketId}-${market.pair}`} className="relative group">
                     <Link
                       href={marketPath}
                       className={`flex items-center gap-2 px-3 py-2 pr-8 rounded-md text-sm transition-colors ${
@@ -123,7 +205,7 @@ export function Sidebar() {
                       </div>
                     </Link>
                     <button
-                      onClick={(e) => handleRemoveMarket(e, market.marketId)}
+                      onClick={(e) => handleRemoveMarket(e, market)}
                       className="absolute right-2 top-1/2 -translate-y-1/2 p-0.5 rounded-md hover:bg-destructive/10 text-muted-foreground hover:text-destructive transition-all"
                       title="Remove market"
                     >
@@ -151,29 +233,40 @@ export function Sidebar() {
               <DialogHeader>
                 <DialogTitle className="text-primary">Visit Market</DialogTitle>
                 <DialogDescription className="text-muted-foreground">
-                  Enter the market desk account ID (bech32 address)
+                  Provide the desk market URL you want to visit. We will verify the desk details before adding it to your list.
                 </DialogDescription>
               </DialogHeader>
               <form onSubmit={handleSubmit} className="space-y-6">
                 <div className="space-y-2">
-                  <Label htmlFor="marketId" className="text-foreground">
-                    Market Desk ID
+                  <Label htmlFor="marketUrl" className="text-foreground">
+                  Market URL
                   </Label>
                   <Input
-                    id="marketId"
-                    placeholder="smaf1qrf9y8pmykxfyqppuehkvds3ffcqqdtepua"
-                    value={marketId}
-                    onChange={(e) => setMarketId(e.target.value)}
+                    id="marketUrl"
+                    placeholder="https://server.com/desk/desk-account"
+                    value={marketUrl}
+                    onChange={(e) => setMarketUrl(e.target.value)}
                     required
                     className="bg-background border-border text-foreground font-mono text-sm"
+                    disabled={addingMarket}
                   />
                   <p className="text-xs text-muted-foreground">
-                    The market will be automatically added to your list after loading
+                  Example: https://app.mosaic.xyz/desk/mtst1q...
                   </p>
+                  {marketError && (
+                    <div className="flex items-center gap-2 text-xs text-destructive">
+                      <AlertTriangle className="h-3.5 w-3.5" />
+                      <span>{marketError}</span>
+                    </div>
+                  )}
                 </div>
 
-                <Button type="submit" className="w-full bg-primary text-background hover:bg-primary/90">
-                  Visit Market
+                <Button
+                  type="submit"
+                  className="w-full bg-primary text-background hover:bg-primary/90"
+                  disabled={addingMarket}
+                >
+                  {addingMarket ? "Validating..." : "Visit Market"}
                 </Button>
               </form>
             </DialogContent>

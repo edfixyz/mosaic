@@ -1,12 +1,11 @@
 use mosaic_fi::note::{MosaicNote, MosaicNoteStatus};
-use mosaic_fi::{AccountType, Market};
+use mosaic_fi::{AccountOrder, AccountOrderResult, AccountType, Market};
 use mosaic_miden::client::ClientHandle;
 use mosaic_miden::store::{AssetRecord, OrderRecord, SettingsRecord};
 use mosaic_miden::{MidenTransactionId, Network};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
-
 pub mod desk_store;
 use desk_store::DeskStore;
 pub mod asset_store;
@@ -18,6 +17,38 @@ pub struct RegistryAsset<'a> {
     pub decimals: u8,
     pub max_supply: Option<&'a str>,
     pub owned: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientAccountRecord {
+    pub account_id: String,
+    pub network: String,
+    pub account_type: String,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeskAccountRecord {
+    pub account_id: String,
+    pub network: Network,
+    pub market: Market,
+    pub owner_account: String,
+    pub market_url: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeskMarketSummary {
+    pub desk_account: String,
+    pub base_account: String,
+    pub quote_account: String,
+    pub market_url: String,
+    pub owner_account: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct AccountsForUser {
+    pub client_accounts: Vec<ClientAccountRecord>,
+    pub desk_accounts: Vec<DeskAccountRecord>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -43,15 +74,18 @@ pub struct RoleSettings {
 pub struct DeskMetadata {
     pub client_handle: ClientHandle,
     pub account_id: String,
+    pub owner_identifier: String,
     pub network: Network,
     pub market: Market,
+    pub owner_account: String,
+    pub market_url: String,
 }
 
 pub struct Serve {
     store_path: PathBuf,
     desk_store_path: PathBuf,
     clients: HashMap<([u8; 32], Network), ClientHandle>,
-    desks: HashMap<Uuid, DeskMetadata>,
+    desks: HashMap<String, DeskMetadata>,
 }
 
 impl Serve {
@@ -80,72 +114,47 @@ impl Serve {
 
         tracing::info!(desk_count = desks.len(), "Restoring desks from database");
 
-        for (uuid, path, network, market) in desks {
+        for desk in desks {
+            let account_id = desk.desk_account.clone();
+            let owner_identifier = desk.owner_identifier.clone();
+            let network = desk.network;
+            let market = desk.market.clone();
+            let client_path = desk.path.clone();
+
             tracing::info!(
-                uuid = %uuid,
-                path = %path.display(),
+                desk_account = %account_id,
+                owner = %owner_identifier,
+                path = %client_path.display(),
                 network = ?network,
                 "Restoring desk"
             );
 
-            match ClientHandle::spawn(path.clone(), network).await {
+            match ClientHandle::spawn(client_path.clone(), network).await {
                 Ok(client_handle) => {
-                    // Get the desk's account ID
-                    let store_path = path.join("mosaic.sqlite3");
-                    match mosaic_miden::store::Store::new(&store_path) {
-                        Ok(store) => {
-                            match store.list_accounts() {
-                                Ok(accounts) => {
-                                    // Find the Desk account
-                                    if let Some((account_id, _, _, _)) = accounts
-                                        .iter()
-                                        .find(|(_, _, acc_type, _)| acc_type == "Desk")
-                                    {
-                                        let metadata = DeskMetadata {
-                                            client_handle,
-                                            account_id: account_id.clone(),
-                                            network,
-                                            market,
-                                        };
-                                        self.desks.insert(uuid, metadata);
-                                        tracing::info!(
-                                            uuid = %uuid,
-                                            account_id = %account_id,
-                                            "Successfully restored desk"
-                                        );
-                                    } else {
-                                        tracing::error!(
-                                            uuid = %uuid,
-                                            path = %path.display(),
-                                            "Desk account not found in store"
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        error = %e,
-                                        uuid = %uuid,
-                                        path = %path.display(),
-                                        "Failed to list accounts"
-                                    );
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!(
-                                error = %e,
-                                uuid = %uuid,
-                                path = %path.display(),
-                                "Failed to open store"
-                            );
-                        }
-                    }
+                    let market_url = Self::resolve_market_url(&account_id, desk.market_url.clone());
+                    let owner_account = desk.owner_account.clone().unwrap_or_default();
+
+                    let metadata = DeskMetadata {
+                        client_handle,
+                        account_id: account_id.clone(),
+                        owner_identifier: owner_identifier.clone(),
+                        network,
+                        market,
+                        owner_account,
+                        market_url,
+                    };
+                    self.desks.insert(account_id.clone(), metadata);
+                    tracing::info!(
+                        desk_account = %account_id,
+                        owner = %owner_identifier,
+                        "Successfully restored desk"
+                    );
                 }
                 Err(e) => {
                     tracing::error!(
                         error = %e,
-                        uuid = %uuid,
-                        path = %path.display(),
+                        desk_account = %account_id,
+                        path = %client_path.display(),
                         "Failed to spawn client handle"
                     );
                 }
@@ -161,18 +170,37 @@ impl Serve {
         secret: [u8; 32],
         network: Network,
         market: Market,
-    ) -> Result<(Uuid, String), Box<dyn std::error::Error>> {
-        let uuid = Uuid::new_v4();
+        owner_account: String,
+    ) -> Result<(String, String), Box<dyn std::error::Error>> {
         let path = self.client_path(secret, network);
         Self::check_or_create(&path)?;
 
         let client_handle = self.get_client(secret, network).await?;
 
-        // Create the account
-        let account = client_handle
-            .create_account()
+        let (_, owner_address) = miden_objects::address::Address::from_bech32(&owner_account)
+            .map_err(|e| anyhow::anyhow!("Invalid owner account '{}': {}", owner_account, e))?;
+        let owner_account_id = match owner_address {
+            miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Owner account must resolve to an account id: {}",
+                    owner_account
+                )
+                .into());
+            }
+        };
+
+        // Create the desk account via the dedicated miden client command
+        let (account, remote_market_url) = client_handle
+            .create_desk_account(
+                market.base.code.clone(),
+                market.base.issuer.clone(),
+                market.quote.code.clone(),
+                market.quote.issuer.clone(),
+                owner_account_id,
+            )
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to create account: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to create desk account: {}", e))?;
 
         let account_id = account.id();
         let address = miden_objects::address::AccountIdAddress::new(
@@ -189,21 +217,44 @@ impl Serve {
         let store = mosaic_miden::store::Store::new(&store_path)?;
         store.insert_account(&account_id_bech32, network, "Desk", None)?;
 
+        let market_url = Self::resolve_market_url(&account_id_bech32, remote_market_url);
+
+        Self::record_account_order(
+            &store,
+            &account_id_bech32,
+            &AccountOrder::CreateDesk {
+                network,
+                market: market.clone(),
+                owner_account: owner_account.clone(),
+            },
+        )?;
+
         // Store in global desk database
         let desk_store = DeskStore::new(&self.desk_store_path)?;
-        desk_store.insert_desk(uuid, &path, network, &market)?;
+        let owner_identifier = Self::secret_to_string(secret);
+        desk_store.insert_desk(
+            &account_id_bech32,
+            &owner_identifier,
+            &owner_account,
+            &path,
+            network,
+            &market,
+            &market_url,
+        )?;
 
         // Add to in-memory desk map with metadata
         let metadata = DeskMetadata {
             client_handle: client_handle.clone(),
             account_id: account_id_bech32.clone(),
+            owner_identifier,
             network,
             market: market.clone(),
+            owner_account: owner_account.clone(),
+            market_url: market_url.clone(),
         };
-        self.desks.insert(uuid, metadata);
+        self.desks.insert(account_id_bech32.clone(), metadata);
 
         tracing::info!(
-            uuid = %uuid,
             account_id = %account_id_bech32,
             network = ?network,
             base = %market.base.code,
@@ -211,32 +262,33 @@ impl Serve {
             "Created new desk account"
         );
 
-        Ok((uuid, account_id_bech32))
+        Ok((account_id_bech32, market_url))
     }
 
-    /// Get a desk client handle by UUID
-    pub fn get_desk(&self, uuid: Uuid) -> Option<&ClientHandle> {
+    /// Get a desk client handle by account identifier
+    pub fn get_desk(&self, account_id: &str) -> Option<&ClientHandle> {
         self.desks
-            .get(&uuid)
+            .get(account_id)
             .map(|metadata| &metadata.client_handle)
     }
 
     /// List all desks
-    pub fn list_desks(&self) -> Vec<Uuid> {
-        self.desks.keys().copied().collect()
+    pub fn list_desks(&self) -> Vec<String> {
+        self.desks.keys().cloned().collect()
     }
 
     /// Push a note to a desk's note store
     pub async fn desk_push_note(
         &self,
-        desk_uuid: Uuid,
+        desk_account: &str,
         note: MosaicNote,
     ) -> Result<i64, Box<dyn std::error::Error>> {
         // Get the desk path from the global desk store
         let desk_store = desk_store::DeskStore::new(&self.desk_store_path)?;
-        let (desk_path, _network, _market) = desk_store
-            .get_desk(desk_uuid)?
-            .ok_or_else(|| anyhow::anyhow!("Desk not found: {}", desk_uuid))?;
+        let stored_desk = desk_store
+            .get_desk(desk_account)?
+            .ok_or_else(|| anyhow::anyhow!("Desk not found: {}", desk_account))?;
+        let desk_path = stored_desk.path;
 
         // Open the desk's note store
         let desk_note_store_path = desk_path.join("desk_notes.sqlite3");
@@ -246,7 +298,7 @@ impl Serve {
         let note_id = desk_note_store.insert_note(&note, desk_store::NoteStatus::New)?;
 
         tracing::info!(
-            desk_uuid = %desk_uuid,
+            desk_account = %desk_account,
             note_id = note_id,
             "Pushed note to desk"
         );
@@ -257,13 +309,14 @@ impl Serve {
     /// Get all notes from a desk
     pub async fn desk_get_notes(
         &self,
-        desk_uuid: Uuid,
+        desk_account: &str,
     ) -> Result<Vec<desk_store::DeskNoteRecord>, Box<dyn std::error::Error>> {
         // Get the desk path from the global desk store
         let desk_store = desk_store::DeskStore::new(&self.desk_store_path)?;
-        let (desk_path, _network, _market) = desk_store
-            .get_desk(desk_uuid)?
-            .ok_or_else(|| anyhow::anyhow!("Desk not found: {}", desk_uuid))?;
+        let stored_desk = desk_store
+            .get_desk(desk_account)?
+            .ok_or_else(|| anyhow::anyhow!("Desk not found: {}", desk_account))?;
+        let desk_path = stored_desk.path;
 
         // Open the desk's note store
         let desk_note_store_path = desk_path.join("desk_notes.sqlite3");
@@ -278,19 +331,74 @@ impl Serve {
     /// Get desk information including market data from in-memory cache
     pub async fn get_desk_info(
         &self,
-        desk_uuid: Uuid,
+        desk_account: &str,
     ) -> Result<(String, Network, Market), Box<dyn std::error::Error>> {
         // Get the desk metadata from in-memory cache
         let metadata = self
             .desks
-            .get(&desk_uuid)
-            .ok_or_else(|| anyhow::anyhow!("Desk not found: {}", desk_uuid))?;
+            .get(desk_account)
+            .ok_or_else(|| anyhow::anyhow!("Desk not found: {}", desk_account))?;
 
         Ok((
             metadata.account_id.clone(),
             metadata.network,
             metadata.market.clone(),
         ))
+    }
+
+    /// Get persisted desk metadata suitable for public APIs
+    pub fn get_desk_market_summary(
+        &self,
+        desk_account: &str,
+    ) -> Result<Option<DeskMarketSummary>, Box<dyn std::error::Error>> {
+        let desk_store = DeskStore::new(&self.desk_store_path)?;
+        let stored = desk_store.get_desk(desk_account)?;
+
+        let Some(stored) = stored else {
+            return Ok(None);
+        };
+
+        let owner_account = stored
+            .owner_account
+            .clone()
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                self.desks
+                    .get(desk_account)
+                    .map(|meta| meta.owner_account.clone())
+            })
+            .unwrap_or_default();
+
+        let market_url = {
+            let provided = stored.market_url.clone().or_else(|| {
+                self.desks
+                    .get(desk_account)
+                    .map(|meta| meta.market_url.clone())
+            });
+            Self::resolve_market_url(desk_account, provided)
+        };
+
+        let summary = DeskMarketSummary {
+            desk_account: desk_account.to_string(),
+            base_account: stored.market.base.issuer.clone(),
+            quote_account: stored.market.quote.issuer.clone(),
+            market_url,
+            owner_account,
+        };
+
+        Ok(Some(summary))
+    }
+
+    fn resolve_market_url(account_id: &str, provided: Option<String>) -> String {
+        provided
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| Self::default_market_url(account_id))
+    }
+
+    fn default_market_url(account_id: &str) -> String {
+        std::env::var("MOSAIC_SERVER")
+            .map(|base| format!("{}/desk/{}", base.trim_end_matches('/'), account_id))
+            .unwrap_or_else(|_| format!("/desk/{}", account_id))
     }
 
     fn secret_to_string(secret: [u8; 32]) -> String {
@@ -332,6 +440,26 @@ impl Serve {
         }
     }
 
+    fn record_account_order(
+        store: &mosaic_miden::store::Store,
+        account_id: &str,
+        order: &AccountOrder,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let order_record = OrderRecord {
+            uuid: Uuid::new_v4().to_string(),
+            order_type: order.kind().to_string(),
+            order_json: serde_json::to_string(order)?,
+            stage: "create".to_string(),
+            status: "succeeded".to_string(),
+            account: account_id.to_string(),
+            created_at: None,
+        };
+
+        store.upsert_order(&order_record)?;
+
+        Ok(())
+    }
+
     fn client_path(&self, secret: [u8; 32], network: Network) -> PathBuf {
         let secret_str = Self::secret_to_string(secret);
         let network_prefix = match network {
@@ -358,10 +486,10 @@ impl Serve {
     pub async fn list_accounts(
         &self,
         secret: [u8; 32],
-    ) -> Result<Vec<(String, String, String, Option<String>)>, Box<dyn std::error::Error>> {
-        let mut all_accounts = Vec::new();
+    ) -> Result<AccountsForUser, Box<dyn std::error::Error>> {
+        let mut client_accounts = Vec::new();
 
-        // Check both testnet and localnet directories
+        // Collect client-managed accounts from each network store
         for network in [Network::Testnet, Network::Localnet] {
             let store_path = self.store_path(secret, network);
 
@@ -373,11 +501,60 @@ impl Serve {
             let accounts = store.list_accounts()?;
 
             for (account_id, network_str, account_type, name) in accounts {
-                all_accounts.push((account_id, network_str, account_type, name));
+                if account_type == "Desk" {
+                    // Desk accounts are surfaced via the desk store for richer metadata
+                    continue;
+                }
+
+                client_accounts.push(ClientAccountRecord {
+                    account_id,
+                    network: network_str,
+                    account_type,
+                    name,
+                });
             }
         }
 
-        Ok(all_accounts)
+        // Collect desk accounts owned by this user
+        let owner_identifier = Self::secret_to_string(secret);
+        let desk_store = DeskStore::new(&self.desk_store_path)?;
+        let desk_accounts = desk_store
+            .list_desks_for_owner(&owner_identifier)?
+            .into_iter()
+            .map(|desk| {
+                let owner_account = desk
+                    .owner_account
+                    .clone()
+                    .filter(|value| !value.is_empty())
+                    .or_else(|| {
+                        self.desks
+                            .get(&desk.desk_account)
+                            .map(|meta| meta.owner_account.clone())
+                    })
+                    .unwrap_or_default();
+                let market_url = Self::resolve_market_url(
+                    &desk.desk_account,
+                    desk.market_url.clone().or_else(|| {
+                        self.desks
+                            .get(&desk.desk_account)
+                            .map(|meta| meta.market_url.clone())
+                    }),
+                );
+
+                DeskAccountRecord {
+                    account_id: desk.desk_account,
+                    network: desk.network,
+                    market: desk.market,
+                    owner_account,
+                    market_url,
+                }
+            })
+            .collect();
+
+        Ok(AccountsForUser {
+            client_accounts,
+            desk_accounts,
+        })
     }
 
     pub fn register_asset(
@@ -483,8 +660,15 @@ impl Serve {
         secret: [u8; 32],
     ) -> Result<RoleSettings, Box<dyn std::error::Error>> {
         let client_dir = self.client_path(secret, Network::Testnet);
+        Self::check_or_create(&client_dir)?;
         let store_path = client_dir.join("mosaic.sqlite3");
-        let store = mosaic_miden::store::Store::new(&store_path)?;
+        let store = match mosaic_miden::store::Store::new(&store_path) {
+            Ok(store) => store,
+            Err(_) => {
+                Self::check_or_create(&client_dir)?;
+                mosaic_miden::store::Store::new(&store_path)?
+            }
+        };
 
         let settings = store.get_settings()?;
         Ok(RoleSettings {
@@ -581,7 +765,29 @@ impl Serve {
             AccountType::Faucet => "Faucet",
         };
 
-        store.insert_account(&account_id_bech32, network, account_type_str, name)?;
+        let account_name = name.map(|value| value.to_string());
+
+        store.insert_account(
+            &account_id_bech32,
+            network,
+            account_type_str,
+            account_name.as_deref(),
+        )?;
+
+        match account_type {
+            AccountType::Client => {
+                let order = AccountOrder::CreateClient {
+                    network,
+                    name: account_name.clone(),
+                };
+                Self::record_account_order(&store, &account_id_bech32, &order)?;
+            }
+            AccountType::Liquidity => {
+                let order = AccountOrder::CreateLiquidity { network };
+                Self::record_account_order(&store, &account_id_bech32, &order)?;
+            }
+            _ => {}
+        }
 
         Ok(account_id_bech32)
     }
@@ -624,7 +830,145 @@ impl Serve {
             Some(token_symbol.as_str()),
         )?;
 
+        let order = AccountOrder::CreateFaucet {
+            network,
+            token_symbol: token_symbol.clone(),
+            decimals,
+            max_supply,
+        };
+        Self::record_account_order(&store, &account_id_bech32, &order)?;
+
         Ok(account_id_bech32)
+    }
+
+    pub async fn create_account_order(
+        &mut self,
+        secret: [u8; 32],
+        order: AccountOrder,
+    ) -> Result<AccountOrderResult, Box<dyn std::error::Error>> {
+        match order {
+            AccountOrder::CreateClient { network, name } => {
+                let normalized_name = name
+                    .as_ref()
+                    .map(|value| value.trim())
+                    .filter(|value| !value.is_empty())
+                    .map(|value| value.to_string());
+
+                let account_id = self
+                    .new_account(
+                        secret,
+                        AccountType::Client,
+                        network,
+                        normalized_name.as_deref(),
+                    )
+                    .await?;
+
+                Ok(AccountOrderResult::Client {
+                    account_id,
+                    name: normalized_name,
+                })
+            }
+            AccountOrder::CreateDesk {
+                network,
+                market,
+                owner_account,
+            } => {
+                let (account_id, market_url) = self
+                    .new_desk_account(secret, network, market.clone(), owner_account.clone())
+                    .await?;
+
+                Ok(AccountOrderResult::Desk {
+                    account_id,
+                    market,
+                    owner_account,
+                    market_url,
+                })
+            }
+            AccountOrder::ActivateDesk {
+                desk_account,
+                owner_account,
+            } => {
+                self.activate_desk_account(secret, &desk_account, &owner_account)
+                    .await?;
+
+                Ok(AccountOrderResult::DeskActivated {
+                    desk_account,
+                    owner_account,
+                })
+            }
+            AccountOrder::DeactivateDesk {
+                desk_account,
+                owner_account,
+            } => {
+                self.deactivate_desk_account(secret, &desk_account, &owner_account)
+                    .await?;
+
+                Ok(AccountOrderResult::DeskDeactivated {
+                    desk_account,
+                    owner_account,
+                })
+            }
+            AccountOrder::CreateFaucet {
+                network,
+                token_symbol,
+                decimals,
+                max_supply,
+            } => {
+                let account_id = self
+                    .new_faucet_account(secret, network, token_symbol.clone(), decimals, max_supply)
+                    .await?;
+
+                let max_supply_string = max_supply.to_string();
+                let asset = RegistryAsset {
+                    symbol: token_symbol.as_str(),
+                    account: account_id.as_str(),
+                    decimals,
+                    max_supply: Some(max_supply_string.as_str()),
+                    owned: true,
+                };
+
+                if let Err(err) = self.register_asset(secret, asset) {
+                    tracing::warn!(
+                        error = %err,
+                        account_id = %account_id,
+                        token_symbol = %token_symbol,
+                        "Failed to register faucet asset for user"
+                    );
+                }
+
+                Ok(AccountOrderResult::Faucet {
+                    account_id,
+                    token_symbol,
+                    decimals,
+                    max_supply,
+                })
+            }
+            AccountOrder::CreateLiquidity { network } => {
+                let account_id = self
+                    .new_account(secret, AccountType::Liquidity, network, None)
+                    .await?;
+
+                Ok(AccountOrderResult::Liquidity { account_id })
+            }
+        }
+    }
+
+    async fn activate_desk_account(
+        &mut self,
+        _secret: [u8; 32],
+        _desk_account: &str,
+        _owner_account: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        todo!("create note, commit and consume");
+    }
+
+    async fn deactivate_desk_account(
+        &mut self,
+        _secret: [u8; 32],
+        _desk_account: &str,
+        _owner_account: &str,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        todo!("create note, commit and consume");
     }
 
     pub async fn create_private_note(
@@ -956,3 +1300,31 @@ impl std::fmt::Display for ServeError {
 }
 
 impl std::error::Error for ServeError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_account_order_persists_entry() {
+        let store = mosaic_miden::store::Store::new(":memory:").expect("store");
+        store
+            .insert_account("test_account", Network::Testnet, "Client", None)
+            .expect("insert account");
+
+        let order = AccountOrder::CreateClient {
+            network: Network::Testnet,
+            name: Some("Primary".to_string()),
+        };
+
+        Serve::record_account_order(&store, "test_account", &order).expect("order recorded");
+
+        let orders = store.list_orders().expect("list orders");
+        assert_eq!(orders.len(), 1);
+        let order = &orders[0];
+        assert_eq!(order.order_type, "CreateClientAccount");
+        assert_eq!(order.stage, "create");
+        assert_eq!(order.status, "succeeded");
+        assert_eq!(order.account, "test_account");
+    }
+}

@@ -1,6 +1,9 @@
+pub mod account;
 pub mod note;
 
 use serde::{Deserialize, Serialize};
+
+pub use account::{AccountOrder, AccountOrderResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccountType {

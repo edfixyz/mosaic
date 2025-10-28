@@ -16,7 +16,8 @@ use miden_lib::{
     utils::{Deserializable, Serializable},
 };
 use miden_objects::{
-    Felt, Word, asset::FungibleAsset, crypto::rand::RpoRandomCoin, note::NoteType as MidenNoteType,
+    Felt, Word, asset::FungibleAsset, crypto::rand::RpoRandomCoin, note::NoteScript,
+    note::NoteType as MidenNoteType, transaction::TransactionScript,
 };
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
@@ -157,14 +158,9 @@ fn create_library(
     Ok(library)
 }
 
-/// Compile an abstract note
-///
-pub fn compile_note(
-    note: MidenAbstractNote,
-    account_id: AccountId,
-    secret: Word,
-    inputs: Inputs,
-) -> Result<MidenNote, Box<dyn std::error::Error>> {
+pub fn build_note_script(
+    note: &MidenAbstractNote,
+) -> Result<NoteScript, Box<dyn std::error::Error>> {
     version::assert_version(&note.version);
     let code = &note.program;
     let assembler: Assembler = TransactionKernel::assembler().with_debug_mode(true);
@@ -176,6 +172,35 @@ pub fn compile_note(
     } else {
         ScriptBuilder::new(true).compile_note_script(code.as_str())?
     };
+    Ok(note_script)
+}
+
+pub fn build_tx_script(
+    note: &MidenAbstractNote,
+) -> Result<TransactionScript, Box<dyn std::error::Error>> {
+    version::assert_version(&note.version);
+    let code = &note.program;
+    let assembler: Assembler = TransactionKernel::assembler().with_debug_mode(true);
+    let tx_script = if !&note.libraries.is_empty() {
+        let libraries = create_library(assembler, &note.libraries)?;
+        ScriptBuilder::new(true)
+            .with_dynamically_linked_library(&libraries)?
+            .compile_tx_script(code.as_str())?
+    } else {
+        ScriptBuilder::new(true).compile_tx_script(code.as_str())?
+    };
+    Ok(tx_script)
+}
+
+/// Compile an abstract note
+///
+pub fn compile_note(
+    note: MidenAbstractNote,
+    account_id: AccountId,
+    secret: Word,
+    inputs: Inputs,
+) -> Result<MidenNote, Box<dyn std::error::Error>> {
+    let note_script = build_note_script(&note).unwrap();
     let mut inputs_inner: Vec<Felt> = vec![];
     for input in inputs {
         match input {
@@ -199,6 +224,7 @@ pub fn compile_note(
     )?;
     let assets = NoteAssets::new(vec![])?;
     let note_inner = Note::new(assets, metadata, note_recipient);
+
     let mut buffer = Vec::new();
     note_inner.write_into(&mut buffer);
     let note_inner_string = hex::encode(&buffer);
@@ -324,6 +350,7 @@ pub async fn commit_note(
         Err(e) => {
             tracing::error!(
                 error = %e,
+                error_debug = ?e,
                 account_id = %account_id,
                 note_version = %note.version,
                 note_type = ?note.note_type,
