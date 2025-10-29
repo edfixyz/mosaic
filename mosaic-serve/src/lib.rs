@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 pub mod desk_store;
-use desk_store::DeskStore;
+use desk_store::{DeskStore, NoteStatus};
 pub mod asset_store;
 use asset_store::{StoredAsset as RegistryStoredAsset, default_assets};
 
@@ -295,13 +295,54 @@ impl Serve {
         let desk_note_store = desk_store::DeskNoteStore::new(&desk_note_store_path)?;
 
         // Insert the note with 'new' status
-        let note_id = desk_note_store.insert_note(&note, desk_store::NoteStatus::New)?;
+        let note_id = desk_note_store.insert_note(&note, NoteStatus::New)?;
 
-        tracing::info!(
-            desk_account = %desk_account,
-            note_id = note_id,
-            "Pushed note to desk"
-        );
+        // Attempt to consume immediately using the desk's client handle
+        let client_handle = self
+            .desks
+            .get(desk_account)
+            .map(|metadata| metadata.client_handle.clone())
+            .ok_or_else(|| {
+                anyhow::anyhow!("Desk client handle not available for {}", desk_account)
+            })?;
+
+        let (_network_id, address) = miden_objects::address::Address::from_bech32(desk_account)
+            .map_err(|e| anyhow::anyhow!("Invalid desk account {}: {}", desk_account, e))?;
+        let account_id = match address {
+            miden_objects::address::Address::AccountId(addr) => addr.id(),
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "Desk account must resolve to an account id: {}",
+                    desk_account
+                )
+                .into());
+            }
+        };
+
+        match client_handle
+            .consume_note(account_id, note.miden_note.miden_note_hex.clone())
+            .await
+        {
+            Ok(tx_id) => {
+                desk_note_store.update_note_status(note_id, NoteStatus::Consumed)?;
+                tracing::info!(
+                    desk_account = %desk_account,
+                    note_id = note_id,
+                    tx_id = %tx_id,
+                    "Consumed note for desk"
+                );
+            }
+            Err(error) => {
+                desk_note_store.update_note_status(note_id, NoteStatus::Invalid)?;
+                tracing::error!(
+                    desk_account = %desk_account,
+                    note_id = note_id,
+                    error = %error,
+                    "Failed to consume note for desk"
+                );
+                return Err(anyhow::anyhow!("Failed to consume note: {}", error).into());
+            }
+        }
 
         Ok(note_id)
     }
