@@ -147,8 +147,8 @@ export default function HomePage() {
           </h1>
           <p className="text-xl text-muted-foreground mb-4">The Next Generation OTC Trading Desk</p>
           <p className="text-lg text-foreground/80 mb-8 max-w-2xl">
-            Powering public markets with private intents — execute and settle transactions seamlessly,
-            in a fully compliant and auditable environment
+            Enabling institutional-grade OTC trading — public execution with counterparty privacy,
+            full regulatory compliance, and auditable transparency
           </p>
           <p className="text-lg text-foreground/80 mb-8 max-w-2xl">
             Powered by Miden
