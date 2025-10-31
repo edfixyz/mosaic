@@ -494,25 +494,13 @@ export default function MarketPage({
           }
         }
 
-        try {
-          const marketInfoResponse = await fetch(`/desk/${marketId}`, {
-            headers: { Accept: 'application/json' },
-          })
-
-          if (marketInfoResponse.ok) {
-            const marketInfo = (await marketInfoResponse.json()) as { market_url?: string }
-            if (typeof marketInfo.market_url === 'string' && marketInfo.market_url.length > 0) {
-              resolvedDeskUrl = marketInfo.market_url
-            }
-          } else {
-            console.warn('Unable to fetch market metadata:', marketInfoResponse.status)
+        if (!resolvedDeskUrl) {
+          const serverBase = process.env.NEXT_PUBLIC_MOSAIC_SERVER?.trim().replace(/\/$/, '')
+          if (serverBase) {
+            resolvedDeskUrl = `${serverBase}/desk/${marketId}`
+          } else if (typeof window !== 'undefined') {
+            resolvedDeskUrl = `${window.location.origin.replace(/\/$/, '')}/desk/${marketId}`
           }
-        } catch (infoError) {
-          console.warn('Failed to retrieve market metadata:', infoError)
-        }
-
-        if (!resolvedDeskUrl && typeof window !== 'undefined') {
-          resolvedDeskUrl = window.location.href
         }
 
         setDeskUrl(resolvedDeskUrl)
@@ -540,7 +528,6 @@ export default function MarketPage({
 
         // Get desk info (base and quote symbols)
         const deskInfo = getDeskInfo(Word, Felt, account)
-        console.log('DSK', deskInfo)
 
         if (deskInfo) {
           setBase(deskInfo.pair.base.symbol)
