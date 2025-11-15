@@ -2045,6 +2045,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bs58",
+ "futures",
  "miden-client",
  "miden-objects",
  "mosaic-fi",
@@ -2053,6 +2054,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",
