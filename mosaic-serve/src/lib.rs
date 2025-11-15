@@ -5,6 +5,8 @@ use mosaic_miden::store::{AssetRecord, OrderRecord, SettingsRecord};
 use mosaic_miden::{MidenTransactionId, Network};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use uuid::Uuid;
 pub mod desk_store;
 use desk_store::{DeskStore, NoteStatus};
@@ -84,8 +86,8 @@ pub struct DeskMetadata {
 pub struct Serve {
     store_path: PathBuf,
     desk_store_path: PathBuf,
-    clients: HashMap<([u8; 32], Network), ClientHandle>,
-    desks: HashMap<String, DeskMetadata>,
+    clients: Arc<Mutex<HashMap<([u8; 32], Network), ClientHandle>>>,
+    desks: Arc<Mutex<HashMap<String, DeskMetadata>>>,
 }
 
 impl Serve {
@@ -102,13 +104,13 @@ impl Serve {
         Ok(Serve {
             store_path,
             desk_store_path,
-            clients: HashMap::new(),
-            desks: HashMap::new(),
+            clients: Arc::new(Mutex::new(HashMap::new())),
+            desks: Arc::new(Mutex::new(HashMap::new())),
         })
     }
 
     /// Initialize the desk store and restore all desks from the database
-    pub async fn init_desks(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    pub async fn init_desks(&self) -> Result<(), Box<dyn std::error::Error>> {
         let desk_store = DeskStore::new(&self.desk_store_path)?;
         let desks = desk_store.list_desks()?;
 
@@ -143,7 +145,13 @@ impl Serve {
                         owner_account,
                         market_url,
                     };
-                    self.desks.insert(account_id.clone(), metadata);
+
+                    // Brief lock to insert desk metadata
+                    {
+                        let mut desks = self.desks.lock().await;
+                        desks.insert(account_id.clone(), metadata);
+                    }
+
                     tracing::info!(
                         desk_account = %account_id,
                         owner = %owner_identifier,
@@ -166,7 +174,7 @@ impl Serve {
 
     /// Create a new desk account and register it in the desk store
     pub async fn new_desk_account(
-        &mut self,
+        &self,
         secret: [u8; 32],
         network: Network,
         market: Market,
@@ -252,7 +260,12 @@ impl Serve {
             owner_account: owner_account.clone(),
             market_url: market_url.clone(),
         };
-        self.desks.insert(account_id_bech32.clone(), metadata);
+
+        // Brief lock to insert desk metadata
+        {
+            let mut desks = self.desks.lock().await;
+            desks.insert(account_id_bech32.clone(), metadata);
+        }
 
         tracing::info!(
             account_id = %account_id_bech32,
@@ -266,15 +279,17 @@ impl Serve {
     }
 
     /// Get a desk client handle by account identifier
-    pub fn get_desk(&self, account_id: &str) -> Option<&ClientHandle> {
-        self.desks
+    pub async fn get_desk(&self, account_id: &str) -> Option<ClientHandle> {
+        let desks = self.desks.lock().await;
+        desks
             .get(account_id)
-            .map(|metadata| &metadata.client_handle)
+            .map(|metadata| metadata.client_handle.clone())
     }
 
     /// List all desks
-    pub fn list_desks(&self) -> Vec<String> {
-        self.desks.keys().cloned().collect()
+    pub async fn list_desks(&self) -> Vec<String> {
+        let desks = self.desks.lock().await;
+        desks.keys().cloned().collect()
     }
 
     /// Push a note to a desk's note store
@@ -298,13 +313,15 @@ impl Serve {
         let note_id = desk_note_store.insert_note(&note, NoteStatus::New)?;
 
         // Attempt to consume immediately using the desk's client handle
-        let client_handle = self
-            .desks
-            .get(desk_account)
-            .map(|metadata| metadata.client_handle.clone())
-            .ok_or_else(|| {
-                anyhow::anyhow!("Desk client handle not available for {}", desk_account)
-            })?;
+        let client_handle = {
+            let desks = self.desks.lock().await;
+            desks
+                .get(desk_account)
+                .map(|metadata| metadata.client_handle.clone())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("Desk client handle not available for {}", desk_account)
+                })?
+        };
 
         let (_network_id, address) = miden_objects::address::Address::from_bech32(desk_account)
             .map_err(|e| anyhow::anyhow!("Invalid desk account {}: {}", desk_account, e))?;
@@ -375,8 +392,8 @@ impl Serve {
         desk_account: &str,
     ) -> Result<(String, Network, Market), Box<dyn std::error::Error>> {
         // Get the desk metadata from in-memory cache
-        let metadata = self
-            .desks
+        let desks = self.desks.lock().await;
+        let metadata = desks
             .get(desk_account)
             .ok_or_else(|| anyhow::anyhow!("Desk not found: {}", desk_account))?;
 
@@ -388,7 +405,7 @@ impl Serve {
     }
 
     /// Get persisted desk metadata suitable for public APIs
-    pub fn get_desk_market_summary(
+    pub async fn get_desk_market_summary(
         &self,
         desk_account: &str,
     ) -> Result<Option<DeskMarketSummary>, Box<dyn std::error::Error>> {
@@ -399,12 +416,14 @@ impl Serve {
             return Ok(None);
         };
 
+        let desks = self.desks.lock().await;
+
         let owner_account = stored
             .owner_account
             .clone()
             .filter(|value| !value.is_empty())
             .or_else(|| {
-                self.desks
+                desks
                     .get(desk_account)
                     .map(|meta| meta.owner_account.clone())
             })
@@ -412,7 +431,7 @@ impl Serve {
 
         let market_url = {
             let provided = stored.market_url.clone().or_else(|| {
-                self.desks
+                desks
                     .get(desk_account)
                     .map(|meta| meta.market_url.clone())
             });
@@ -559,8 +578,10 @@ impl Serve {
         // Collect desk accounts owned by this user
         let owner_identifier = Self::secret_to_string(secret);
         let desk_store = DeskStore::new(&self.desk_store_path)?;
-        let desk_accounts = desk_store
-            .list_desks_for_owner(&owner_identifier)?
+        let desks_from_db = desk_store.list_desks_for_owner(&owner_identifier)?;
+
+        let desks = self.desks.lock().await;
+        let desk_accounts = desks_from_db
             .into_iter()
             .map(|desk| {
                 let owner_account = desk
@@ -568,7 +589,7 @@ impl Serve {
                     .clone()
                     .filter(|value| !value.is_empty())
                     .or_else(|| {
-                        self.desks
+                        desks
                             .get(&desk.desk_account)
                             .map(|meta| meta.owner_account.clone())
                     })
@@ -576,7 +597,7 @@ impl Serve {
                 let market_url = Self::resolve_market_url(
                     &desk.desk_account,
                     desk.market_url.clone().or_else(|| {
-                        self.desks
+                        desks
                             .get(&desk.desk_account)
                             .map(|meta| meta.market_url.clone())
                     }),
@@ -750,26 +771,39 @@ impl Serve {
     }
 
     pub async fn get_client(
-        &mut self,
+        &self,
         secret: [u8; 32],
         network: Network,
     ) -> Result<ClientHandle, Box<dyn std::error::Error>> {
-        if let Some(client_handle) = self.clients.get(&(secret, network)) {
-            return Ok(client_handle.clone());
+        // Brief lock to check cache
+        {
+            let clients = self.clients.lock().await;
+            if let Some(client_handle) = clients.get(&(secret, network)) {
+                return Ok(client_handle.clone());
+            }
         }
+        // Lock released before spawning
 
         let path = self.client_path(secret, network);
 
+        // Spawn client without holding lock (this is the slow operation)
         let client_handle = ClientHandle::spawn(path, network).await?;
 
-        self.clients
-            .insert((secret, network), client_handle.clone());
+        // Brief lock to insert into cache
+        {
+            let mut clients = self.clients.lock().await;
+            // Check again in case another request spawned it while we were spawning
+            if let Some(existing_handle) = clients.get(&(secret, network)) {
+                return Ok(existing_handle.clone());
+            }
+            clients.insert((secret, network), client_handle.clone());
+        }
 
         Ok(client_handle)
     }
 
     pub async fn new_account(
-        &mut self,
+        &self,
         secret: [u8; 32],
         account_type: AccountType,
         network: Network,
@@ -834,7 +868,7 @@ impl Serve {
     }
 
     pub async fn new_faucet_account(
-        &mut self,
+        &self,
         secret: [u8; 32],
         network: Network,
         token_symbol: String,
@@ -883,7 +917,7 @@ impl Serve {
     }
 
     pub async fn create_account_order(
-        &mut self,
+        &self,
         secret: [u8; 32],
         order: AccountOrder,
     ) -> Result<AccountOrderResult, Box<dyn std::error::Error>> {
@@ -995,7 +1029,7 @@ impl Serve {
     }
 
     async fn activate_desk_account(
-        &mut self,
+        &self,
         _secret: [u8; 32],
         _desk_account: &str,
         _owner_account: &str,
@@ -1004,7 +1038,7 @@ impl Serve {
     }
 
     async fn deactivate_desk_account(
-        &mut self,
+        &self,
         _secret: [u8; 32],
         _desk_account: &str,
         _owner_account: &str,
@@ -1013,7 +1047,7 @@ impl Serve {
     }
 
     pub async fn create_private_note(
-        &mut self,
+        &self,
         secret: [u8; 32],
         network: Network,
         account_id_bech32: String,
@@ -1098,7 +1132,7 @@ impl Serve {
     }
 
     pub async fn create_note_from_masm(
-        &mut self,
+        &self,
         secret: [u8; 32],
         network: Network,
         account_id_bech32: String,
@@ -1167,7 +1201,7 @@ impl Serve {
     }
 
     pub async fn consume_note(
-        &mut self,
+        &self,
         secret: [u8; 32],
         network: Network,
         account_id_bech32: String,
@@ -1263,7 +1297,7 @@ impl Serve {
     }
 
     pub async fn get_account_status(
-        &mut self,
+        &self,
         secret: [u8; 32],
         network: Network,
         account_id_bech32: String,
@@ -1306,18 +1340,19 @@ impl Serve {
 
     /// Flush all cached clients
     /// Returns the number of clients that were flushed
-    pub fn flush(&mut self) -> usize {
-        let count = self.clients.len();
-        self.clients.clear();
+    pub async fn flush(&self) -> usize {
+        let mut clients = self.clients.lock().await;
+        let count = clients.len();
+        clients.clear();
         count
     }
 
     /// Flush cached clients for a specific user secret
-    pub fn flush_clients_for_secret(&mut self, secret: [u8; 32]) -> usize {
-        let before = self.clients.len();
-        self.clients
-            .retain(|(entry_secret, _), _| entry_secret != &secret);
-        before - self.clients.len()
+    pub async fn flush_clients_for_secret(&self, secret: [u8; 32]) -> usize {
+        let mut clients = self.clients.lock().await;
+        let before = clients.len();
+        clients.retain(|(entry_secret, _), _| entry_secret != &secret);
+        before - clients.len()
     }
 }
 

@@ -170,53 +170,61 @@ async fn get_desk_info_handler(
     AxumState(serve): AxumState<Arc<Mutex<Serve>>>,
     Path(account_id): Path<String>,
 ) -> impl IntoResponse {
-    // Get desk info
-    let serve = serve.lock().await;
-    match serve.get_desk_info(&account_id).await {
-        Ok((account_id, network, market)) => {
-            let summary = serve.get_desk_market_summary(&account_id).ok().flatten();
-
-            let (base_account, quote_account, market_url, owner_account) = summary
-                .map(|s| {
-                    (
-                        s.base_account,
-                        s.quote_account,
-                        s.market_url,
-                        s.owner_account,
-                    )
-                })
-                .unwrap_or_else(|| {
-                    (
-                        String::new(),
-                        String::new(),
-                        fallback_desk_url(&account_id),
-                        String::new(),
-                    )
-                });
-
-            let response = DeskInfoResponse {
-                desk_account: account_id.clone(),
-                account_id,
-                network: match network {
-                    Network::Testnet => "Testnet".to_string(),
-                    Network::Localnet => "Localnet".to_string(),
-                },
-                market,
-                base_account,
-                quote_account,
-                market_url,
-                owner_account,
-            };
-            let mut response = (StatusCode::OK, Json(response)).into_response();
-            apply_desk_cors_headers(response.headers_mut());
-            response
+    // Get desk info - lock is acquired and released inside get_desk_info
+    let (desk_account_id, network, market) = {
+        let serve = serve.lock().await;
+        match serve.get_desk_info(&account_id).await {
+            Ok(result) => result,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": format!("Failed to get desk info: {}", e)})),
+                )
+                    .into_response();
+            }
         }
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to get desk info: {}", e)})),
-        )
-            .into_response(),
-    }
+    };
+
+    // Get desk market summary - lock is acquired and released inside get_desk_market_summary
+    let summary = {
+        let serve = serve.lock().await;
+        serve.get_desk_market_summary(&account_id).await.ok().flatten()
+    };
+
+    let (base_account, quote_account, market_url, owner_account) = summary
+        .map(|s| {
+            (
+                s.base_account,
+                s.quote_account,
+                s.market_url,
+                s.owner_account,
+            )
+        })
+        .unwrap_or_else(|| {
+            (
+                String::new(),
+                String::new(),
+                fallback_desk_url(&account_id),
+                String::new(),
+            )
+        });
+
+    let response = DeskInfoResponse {
+        desk_account: account_id.clone(),
+        account_id: desk_account_id,
+        network: match network {
+            Network::Testnet => "Testnet".to_string(),
+            Network::Localnet => "Localnet".to_string(),
+        },
+        market,
+        base_account,
+        quote_account,
+        market_url,
+        owner_account,
+    };
+    let mut response = (StatusCode::OK, Json(response)).into_response();
+    apply_desk_cors_headers(response.headers_mut());
+    response
 }
 
 // POST /desk/:account_id/note
@@ -278,7 +286,7 @@ async fn run_mcp_server(
     }
 
     // Create shared Serve instance
-    let mut serve = mosaic_serve::Serve::new(&storage_path)?;
+    let serve = mosaic_serve::Serve::new(&storage_path)?;
     serve.init_desks().await?;
     let serve_state = Arc::new(Mutex::new(serve));
 
@@ -360,7 +368,7 @@ async fn run_rest_server(
     tracing::info!("Using storage path: {}", storage_path);
 
     // Create shared Serve instance
-    let mut serve = mosaic_serve::Serve::new(&storage_path)?;
+    let serve = mosaic_serve::Serve::new(&storage_path)?;
     serve.init_desks().await?;
     let serve_state = Arc::new(Mutex::new(serve));
 
@@ -407,7 +415,7 @@ async fn run_combined_server_same_port(
     }
 
     // Create shared Serve instance
-    let mut serve = mosaic_serve::Serve::new(&storage_path)?;
+    let serve = mosaic_serve::Serve::new(&storage_path)?;
     serve.init_desks().await?;
     let serve_state = Arc::new(Mutex::new(serve));
 
@@ -500,7 +508,7 @@ async fn run_both_servers_different_ports(
     }
 
     // Create shared Serve instance for both servers
-    let mut serve = mosaic_serve::Serve::new(&storage_path)?;
+    let serve = mosaic_serve::Serve::new(&storage_path)?;
     serve.init_desks().await?;
     let serve_state = Arc::new(Mutex::new(serve));
 
