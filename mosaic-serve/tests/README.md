@@ -8,52 +8,64 @@ The tests verify that multiple backend requests can execute concurrently instead
 
 ## Running the Tests
 
-Run all concurrency tests:
+**Note**: Most integration tests require a running Miden node infrastructure and are marked with `#[ignore]` by default. They won't run in standard CI but can be run locally when you have the proper setup.
+
+Run tests that don't require infrastructure (runs in CI):
 ```bash
 cargo test -p mosaic-serve --test concurrency_tests
 ```
 
-Run a specific test with output:
+Run ALL tests including ignored ones (requires Miden node):
 ```bash
-cargo test -p mosaic-serve --test concurrency_tests test_concurrent_account_creation_different_users -- --nocapture
+cargo test -p mosaic-serve --test concurrency_tests -- --ignored --nocapture
 ```
 
-Run with timing information:
+Run a specific ignored test with output:
 ```bash
-cargo test -p mosaic-serve --test concurrency_tests test_timing_proves_concurrency -- --nocapture
+cargo test -p mosaic-serve --test concurrency_tests test_concurrent_account_creation_different_users -- --ignored --nocapture
 ```
 
 ## Test Cases
 
-### 1. `test_concurrent_account_creation_different_users`
-- **Purpose**: Verify two different users can create accounts simultaneously
-- **Expected**: Both operations succeed and create distinct accounts
-- **Key metric**: Both complete without serialization
+### Lightweight Tests (Run in CI)
 
-### 2. `test_concurrent_operations_do_not_block`
-- **Purpose**: Verify slow operations (create account) don't block fast operations (list accounts)
-- **Expected**: List operation completes much faster than create operation
-- **Key metric**: `list_time < create_time`
-
-### 3. `test_concurrent_get_client_same_user_network`
-- **Purpose**: Test the double-check pattern prevents duplicate client spawns
-- **Expected**: 10 concurrent `get_client()` calls for same (secret, network) only spawn ONE client
-- **Key metric**: All handles work correctly, no duplicate spawns
-
-### 4. `test_high_concurrency_stress`
-- **Purpose**: Stress test with 20 concurrent account creations
-- **Expected**: At least 15/20 succeed (some may fail due to test env resource constraints)
-- **Key metric**: No deadlocks, data integrity maintained
-
-### 5. `test_concurrent_desk_operations`
+#### `test_concurrent_desk_operations`
 - **Purpose**: Verify concurrent desk cache access doesn't cause deadlocks
 - **Expected**: All 10 concurrent desk list operations complete successfully
 - **Key metric**: No panics or deadlocks
+- **Infrastructure**: None required (just tests locking behavior)
 
-### 6. `test_timing_proves_concurrency`
+### Heavy Tests (Require Miden Infrastructure - Marked `#[ignore]`)
+
+#### 1. `test_concurrent_account_creation_different_users`
+- **Purpose**: Verify two different users can create accounts simultaneously
+- **Expected**: Both operations succeed and create distinct accounts
+- **Key metric**: Both complete without serialization
+- **Requires**: Miden node running
+
+#### 2. `test_concurrent_operations_do_not_block`
+- **Purpose**: Verify slow operations (create account) don't block fast operations (list accounts)
+- **Expected**: List operation completes much faster than create operation
+- **Key metric**: `list_time < create_time`
+- **Requires**: Miden node running
+
+#### 3. `test_concurrent_get_client_same_user_network`
+- **Purpose**: Test the double-check pattern prevents duplicate client spawns
+- **Expected**: 10 concurrent `get_client()` calls for same (secret, network) only spawn ONE client
+- **Key metric**: All handles work correctly, no duplicate spawns
+- **Requires**: Miden node running
+
+#### 4. `test_high_concurrency_stress`
+- **Purpose**: Stress test with 20 concurrent account creations
+- **Expected**: At least 15/20 succeed (some may fail due to test env resource constraints)
+- **Key metric**: No deadlocks, data integrity maintained
+- **Requires**: Miden node running
+
+#### 5. `test_timing_proves_concurrency`
 - **Purpose**: Prove through timing that requests execute concurrently
 - **Expected**: Concurrent execution is at least 1.3x faster than sequential
 - **Key metric**: `speedup > 1.3x`
+- **Requires**: Miden node running
 
 ## What the Tests Verify
 

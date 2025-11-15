@@ -14,6 +14,7 @@ async fn create_test_serve() -> (Serve, TempDir) {
 }
 
 #[tokio::test]
+#[ignore] // Requires Miden node infrastructure
 async fn test_concurrent_account_creation_different_users() {
     // Test: Two different users creating accounts concurrently should not block each other
     let (serve, _temp_dir) = create_test_serve().await;
@@ -85,6 +86,7 @@ async fn test_concurrent_account_creation_different_users() {
 }
 
 #[tokio::test]
+#[ignore] // Requires Miden node infrastructure
 async fn test_concurrent_operations_do_not_block() {
     // Test: Account creation should not block account listing
     let (serve, _temp_dir) = create_test_serve().await;
@@ -161,6 +163,7 @@ async fn test_concurrent_operations_do_not_block() {
 }
 
 #[tokio::test]
+#[ignore] // Requires Miden node infrastructure
 async fn test_concurrent_get_client_same_user_network() {
     // Test: Multiple concurrent get_client calls for same (secret, network)
     // should only spawn ONE ClientHandle (tests the double-check pattern)
@@ -221,6 +224,7 @@ async fn test_concurrent_get_client_same_user_network() {
 }
 
 #[tokio::test]
+#[ignore] // Requires Miden node infrastructure
 async fn test_high_concurrency_stress() {
     // Stress test: 20 concurrent operations of various types
     let (serve, _temp_dir) = create_test_serve().await;
@@ -318,6 +322,7 @@ async fn test_concurrent_desk_operations() {
 }
 
 #[tokio::test]
+#[ignore] // Requires Miden node infrastructure
 async fn test_timing_proves_concurrency() {
     // Timing test: Prove that concurrent execution is actually concurrent
     let (serve, _temp_dir) = create_test_serve().await;
