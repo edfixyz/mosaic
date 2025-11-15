@@ -430,11 +430,10 @@ impl Serve {
             .unwrap_or_default();
 
         let market_url = {
-            let provided = stored.market_url.clone().or_else(|| {
-                desks
-                    .get(desk_account)
-                    .map(|meta| meta.market_url.clone())
-            });
+            let provided = stored
+                .market_url
+                .clone()
+                .or_else(|| desks.get(desk_account).map(|meta| meta.market_url.clone()));
             Self::resolve_market_url(desk_account, provided)
         };
 

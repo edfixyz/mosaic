@@ -60,8 +60,16 @@ async fn test_concurrent_account_creation_different_users() {
 
     let elapsed = start.elapsed();
 
-    assert!(result1.is_ok(), "Task 1 join failed: {:?}", result1.unwrap_err());
-    assert!(result2.is_ok(), "Task 2 join failed: {:?}", result2.unwrap_err());
+    assert!(
+        result1.is_ok(),
+        "Task 1 join failed: {:?}",
+        result1.unwrap_err()
+    );
+    assert!(
+        result2.is_ok(),
+        "Task 2 join failed: {:?}",
+        result2.unwrap_err()
+    );
 
     let result1 = result1.unwrap().expect("Account creation 1 failed");
     let result2 = result2.unwrap().expect("Account creation 2 failed");
@@ -132,7 +140,10 @@ async fn test_concurrent_operations_do_not_block() {
 
     let list_task = tokio::spawn(async move {
         let start = Instant::now();
-        let result = serve2.list_accounts(secret).await.map_err(|e| e.to_string());
+        let result = serve2
+            .list_accounts(secret)
+            .await
+            .map_err(|e| e.to_string());
         (result, start.elapsed())
     });
 
@@ -143,7 +154,11 @@ async fn test_concurrent_operations_do_not_block() {
     let (create_res, create_time) = create_result.unwrap();
     let (list_res, list_time) = list_result.unwrap();
 
-    assert!(create_res.is_ok(), "Create failed: {:?}", create_res.unwrap_err());
+    assert!(
+        create_res.is_ok(),
+        "Create failed: {:?}",
+        create_res.unwrap_err()
+    );
     assert!(list_res.is_ok(), "List failed: {:?}", list_res.unwrap_err());
 
     println!("✓ Create took: {:?}", create_time);
@@ -179,7 +194,10 @@ async fn test_concurrent_get_client_same_user_network() {
         let serve_clone = serve.clone();
         let task = tokio::spawn(async move {
             let start = Instant::now();
-            let result = serve_clone.get_client(secret, network).await.map_err(|e| e.to_string());
+            let result = serve_clone
+                .get_client(secret, network)
+                .await
+                .map_err(|e| e.to_string());
             (i, result, start.elapsed())
         });
         tasks.push(task);
@@ -195,7 +213,10 @@ async fn test_concurrent_get_client_same_user_network() {
             inner_result.is_ok(),
             "Task {} failed: {}",
             i,
-            inner_result.as_ref().err().unwrap_or(&"Unknown error".to_string())
+            inner_result
+                .as_ref()
+                .err()
+                .unwrap_or(&"Unknown error".to_string())
         );
         println!("✓ Task {} completed in {:?}", i, elapsed);
     }
@@ -218,9 +239,7 @@ async fn test_concurrent_get_client_same_user_network() {
     }
 
     println!("✓ All 10 concurrent get_client calls succeeded");
-    println!(
-        "✓ Double-check pattern prevented duplicate client spawns"
-    );
+    println!("✓ Double-check pattern prevented duplicate client spawns");
 }
 
 #[tokio::test]
@@ -263,11 +282,7 @@ async fn test_high_concurrency_stress() {
     // Count successes
     let success_count = results
         .iter()
-        .filter(|r| {
-            r.as_ref()
-                .map(|inner| inner.is_ok())
-                .unwrap_or(false)
-        })
+        .filter(|r| r.as_ref().map(|inner| inner.is_ok()).unwrap_or(false))
         .count();
 
     println!("✓ Stress test: {}/20 operations succeeded", success_count);
@@ -408,5 +423,8 @@ async fn test_timing_proves_concurrency() {
         speedup
     );
 
-    println!("✓ Timing proves true concurrent execution ({}x speedup)", speedup as u32);
+    println!(
+        "✓ Timing proves true concurrent execution ({}x speedup)",
+        speedup as u32
+    );
 }

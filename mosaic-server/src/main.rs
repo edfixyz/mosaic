@@ -188,7 +188,11 @@ async fn get_desk_info_handler(
     // Get desk market summary - lock is acquired and released inside get_desk_market_summary
     let summary = {
         let serve = serve.lock().await;
-        serve.get_desk_market_summary(&account_id).await.ok().flatten()
+        serve
+            .get_desk_market_summary(&account_id)
+            .await
+            .ok()
+            .flatten()
     };
 
     let (base_account, quote_account, market_url, owner_account) = summary
