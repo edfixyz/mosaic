@@ -2,7 +2,7 @@ use crate::{MidenTransactionId, Network, symbol::encode_symbol};
 use miden_client::{
     Client,
     account::{AccountHeader, AccountId, component::BasicWallet},
-    auth::{AuthSecretKey, PublicKeyCommitment},
+    auth::AuthSecretKey,
     builder::ClientBuilder,
     keystore::FilesystemKeyStore,
     rpc::{Endpoint, GrpcClient},
@@ -287,9 +287,7 @@ impl ClientHandle {
         client.rng().fill_bytes(&mut init_seed);
 
         let key_pair = AuthSecretKey::new_rpo_falcon512_with_rng(client.rng());
-        let auth_component = AuthRpoFalcon512::new(PublicKeyCommitment::from(
-            key_pair.public_key().to_commitment(),
-        ));
+        let auth_component = AuthRpoFalcon512::new(key_pair.public_key().to_commitment());
 
         let builder = AccountBuilder::new(init_seed)
             .account_type(MidenAccountType::RegularAccountUpdatableCode)
@@ -325,9 +323,7 @@ impl ClientHandle {
         let max_supply_felt = Felt::new(max_supply);
 
         let key_pair = AuthSecretKey::new_rpo_falcon512_with_rng(client.rng());
-        let auth_component = AuthRpoFalcon512::new(PublicKeyCommitment::from(
-            key_pair.public_key().to_commitment(),
-        ));
+        let auth_component = AuthRpoFalcon512::new(key_pair.public_key().to_commitment());
 
         let builder = AccountBuilder::new(init_seed)
             .account_type(MidenAccountType::FungibleFaucet)
@@ -379,7 +375,7 @@ impl ClientHandle {
         }
 
         let network = Network::from_network_id(base_network_id)
-            .ok_or_else(|| format!("Unsupported network id"))?;
+            .ok_or_else(|| "Unsupported network id".to_string())?;
 
         tracing::info!(
             base_symbol,
