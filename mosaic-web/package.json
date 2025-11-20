@@ -9,9 +9,9 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@auth0/auth0-react": "^2.8.0",
-    "@auth0/nextjs-auth0": "^4.11.0",
-    "@demox-labs/miden-sdk": "^0.11.9",
+    "@auth0/auth0-react": "^2.9.0",
+    "@auth0/nextjs-auth0": "^4.13.0",
+    "@demox-labs/miden-sdk": "^0.12.3",
     "@modelcontextprotocol/sdk": "1.20.1",
     "@radix-ui/react-dialog": "latest",
     "@radix-ui/react-label": "latest",
@@ -23,7 +23,7 @@
     "clsx": "^2.1.1",
     "geist": "^1.5.1",
     "lucide-react": "^0.454.0",
-    "next": "16.0.0",
+    "next": "16.0.3",
     "react": "19.2.0",
     "react-dom": "19.2.0",
     "tailwind-merge": "^3.3.1"

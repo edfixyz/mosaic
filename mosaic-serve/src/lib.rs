@@ -1,3 +1,4 @@
+use miden_client::account::AccountId;
 use mosaic_fi::note::{MosaicNote, MosaicNoteStatus};
 use mosaic_fi::{AccountOrder, AccountOrderResult, AccountType, Market};
 use mosaic_miden::client::ClientHandle;
@@ -177,18 +178,8 @@ impl Serve {
 
         let client_handle = self.get_client(secret, network).await?;
 
-        let (_, owner_address) = miden_objects::address::Address::from_bech32(&owner_account)
+        let (_, owner_account_id) = AccountId::from_bech32(&owner_account)
             .map_err(|e| anyhow::anyhow!("Invalid owner account '{}': {}", owner_account, e))?;
-        let owner_account_id = match owner_address {
-            miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Owner account must resolve to an account id: {}",
-                    owner_account
-                )
-                .into());
-            }
-        };
 
         // Create the desk account via the dedicated miden client command
         let (account, remote_market_url) = client_handle
@@ -202,15 +193,7 @@ impl Serve {
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create desk account: {}", e))?;
 
-        let account_id = account.id();
-        let address = miden_objects::address::AccountIdAddress::new(
-            account_id,
-            miden_objects::address::AddressInterface::Unspecified,
-        );
-
-        let network_id = network.to_network_id();
-        let account_id_bech32 =
-            miden_objects::address::Address::from(address).to_bech32(network_id);
+        let account_id_bech32 = account.id().to_bech32(network.to_network_id());
 
         // Store in account SQLite database
         let store_path = self.store_path(secret, network);
@@ -306,18 +289,7 @@ impl Serve {
                 anyhow::anyhow!("Desk client handle not available for {}", desk_account)
             })?;
 
-        let (_network_id, address) = miden_objects::address::Address::from_bech32(desk_account)
-            .map_err(|e| anyhow::anyhow!("Invalid desk account {}: {}", desk_account, e))?;
-        let account_id = match address {
-            miden_objects::address::Address::AccountId(addr) => addr.id(),
-            _ => {
-                return Err(anyhow::anyhow!(
-                    "Desk account must resolve to an account id: {}",
-                    desk_account
-                )
-                .into());
-            }
-        };
+        let (_, account_id) = AccountId::from_bech32(desk_account)?;
 
         match client_handle
             .consume_note(account_id, note.miden_note.miden_note_hex.clone())
@@ -447,16 +419,10 @@ impl Serve {
     }
 
     fn network_from_account(account: &str) -> Result<Network, anyhow::Error> {
-        let (network_id, _) = miden_objects::address::Address::from_bech32(account)
-            .map_err(|e| anyhow::anyhow!("Invalid account '{}': {}", account, e))?;
+        let (network_id, _) = AccountId::from_bech32(account)?;
 
-        Network::from_network_id(network_id).ok_or_else(|| {
-            anyhow::anyhow!(
-                "Unsupported network '{}' for account {}",
-                network_id,
-                account
-            )
-        })
+        Network::from_network_id(network_id)
+            .ok_or_else(|| anyhow::anyhow!("Unsupported network for account {}", account))
     }
 
     fn order_metadata(order: &mosaic_fi::note::Order) -> (String, Option<String>) {
@@ -786,14 +752,9 @@ impl Serve {
             .map_err(|e| anyhow::anyhow!("Failed to create account: {}", e))?;
 
         let account_id = account.id();
-        let address = miden_objects::address::AccountIdAddress::new(
-            account_id,
-            miden_objects::address::AddressInterface::Unspecified,
-        );
-
         let network_id = network.to_network_id();
-        let account_id_bech32 =
-            miden_objects::address::Address::from(address).to_bech32(network_id);
+        let address = miden_objects::address::Address::new(account_id);
+        let account_id_bech32 = address.encode(network_id);
 
         // Store in SQLite database
         let store_path = self.store_path(secret, network);
@@ -852,13 +813,9 @@ impl Serve {
             .map_err(|e| anyhow::anyhow!("Failed to create faucet account: {}", e))?;
 
         let account_id = account.id();
-        let address = miden_objects::address::AccountIdAddress::new(
-            account_id,
-            miden_objects::address::AddressInterface::Unspecified,
-        );
         let network_id = network.to_network_id();
-        let account_id_bech32 =
-            miden_objects::address::Address::from(address).to_bech32(network_id);
+        let address = miden_objects::address::Address::new(account_id);
+        let account_id_bech32 = address.encode(network_id);
 
         // Store in SQLite database
         let store_path = self.store_path(secret, network);
@@ -1022,10 +979,9 @@ impl Serve {
     ) -> Result<MosaicNote, Box<dyn std::error::Error>> {
         let client_handle = self.get_client(secret, network).await?;
 
-        let (_network_id, address) =
-            miden_objects::address::Address::from_bech32(&account_id_bech32)?;
-        let account_id = match address {
-            miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
+        let (_network_id, address) = miden_objects::address::Address::decode(&account_id_bech32)?;
+        let account_id = match address.id() {
+            miden_objects::address::AddressId::AccountId(account_id) => account_id,
             _ => {
                 return Err(
                     format!("Invalid address type for account ID: {}", account_id_bech32).into(),
@@ -1110,10 +1066,9 @@ impl Serve {
     ) -> Result<mosaic_miden::note::MidenNote, Box<dyn std::error::Error>> {
         let client_handle = self.get_client(secret, network).await?;
 
-        let (_network_id, address) =
-            miden_objects::address::Address::from_bech32(&account_id_bech32)?;
-        let account_id = match address {
-            miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
+        let (_network_id, address) = miden_objects::address::Address::decode(&account_id_bech32)?;
+        let account_id = match address.id() {
+            miden_objects::address::AddressId::AccountId(account_id) => account_id,
             _ => {
                 return Err(
                     format!("Invalid address type for account ID: {}", account_id_bech32).into(),
@@ -1184,8 +1139,8 @@ impl Serve {
 
         let client_handle = self.get_client(secret, network).await?;
 
-        let (_network_id, address) =
-            miden_objects::address::Address::from_bech32(&account_id_bech32).map_err(|e| {
+        let (_network_id, address) = miden_objects::address::Address::decode(&account_id_bech32)
+            .map_err(|e| {
                 tracing::error!(
                     error = %e,
                     account_id_bech32 = %account_id_bech32,
@@ -1193,8 +1148,8 @@ impl Serve {
                 );
                 e
             })?;
-        let account_id = match address {
-            miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
+        let account_id = match address.id() {
+            miden_objects::address::AddressId::AccountId(account_id) => account_id,
             _ => {
                 tracing::error!(
                     account_id_bech32 = %account_id_bech32,
@@ -1270,10 +1225,9 @@ impl Serve {
     ) -> Result<mosaic_miden::AccountStatusData, Box<dyn std::error::Error>> {
         let client_handle = self.get_client(secret, network).await?;
 
-        let (_network_id, address) =
-            miden_objects::address::Address::from_bech32(&account_id_bech32)?;
-        let account_id = match address {
-            miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
+        let (_network_id, address) = miden_objects::address::Address::decode(&account_id_bech32)?;
+        let account_id = match address.id() {
+            miden_objects::address::AddressId::AccountId(account_id) => account_id,
             _ => {
                 return Err(
                     format!("Invalid address type for account ID: {}", account_id_bech32).into(),

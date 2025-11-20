@@ -345,7 +345,7 @@ pub async fn commit_note(
     };
 
     // Execute transaction
-    let tx_result = match client.new_transaction(account_id, tx_req).await {
+    let tx_id = match client.submit_new_transaction(account_id, tx_req).await {
         Ok(result) => result,
         Err(e) => {
             tracing::error!(
@@ -364,27 +364,11 @@ pub async fn commit_note(
         }
     };
 
-    let tx_id = tx_result.executed_transaction().id();
     tracing::info!(
         transaction_id = %tx_id,
         account_id = %account_id,
         "Transaction executed"
     );
-
-    // Submit transaction
-    if let Err(e) = client.submit_transaction(tx_result).await {
-        tracing::error!(
-            error = %e,
-            transaction_id = %tx_id,
-            account_id = %account_id,
-            note_version = %note.version,
-            note_type = ?note.note_type,
-            note_id = %note_inner.id(),
-            note_hex = %note.miden_note_hex,
-            "Failed to submit transaction"
-        );
-        return Err(Box::new(e));
-    }
 
     Ok(tx_id.to_string())
 }
@@ -410,7 +394,7 @@ mod tests {
         assert_eq!(miden_note.note_type, NoteType::Private);
         assert_eq!(
             miden_note.miden_note_hex,
-            "0088345ef4b98518816b077a311a7a33000000c0000000000000000000000000004d41535400000000030303000000000503000000000000000030f0db3924f3e2d677a51924b09ecef8a12416a6ceb09fadd39785bb4f685cab6601011d010001010600000009000000030507010d272f0b24657865631924657865633a3a246d61696e076e6f7000000000000301030100000000010100000000000300000000000000030000000000000003000000000000000300000000000000"
+            "0088345ef4b98518816b077a311a7a33000000c0000000000000000000000000004d41535400000000030303000000002d0b5b00000080000000005bfeffffff000000002d290000000000000000303bf7b08490b7f08c1a58d9707e62ab5c77f359569fca5d69dcba7982cb015f8901011d010001010600000009000000030507010d272f0b24657865631924657865633a3a246d61696e076e6f7000000000000301030900000000010100000000000300000000000000030000000000000003000000000000000300000000000000"
         );
     }
 }
