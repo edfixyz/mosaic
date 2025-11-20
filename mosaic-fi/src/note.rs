@@ -140,18 +140,7 @@ pub fn compile_note_from_account_id(
             amount,
         } => {
             // Parse target account ID from bech32
-            let (_network_id, address) =
-                miden_objects::address::Address::from_bech32(target_account_id)?;
-            let target_account = match address {
-                miden_objects::address::Address::AccountId(account_id_addr) => account_id_addr.id(),
-                _ => {
-                    return Err(format!(
-                        "Invalid address type for target account ID: {}",
-                        target_account_id
-                    )
-                    .into());
-                }
-            };
+            let (_network_id, target_account) = AccountId::from_bech32(target_account_id)?;
 
             // Create RpoRandomCoin for note creation
             use miden_objects::Word;

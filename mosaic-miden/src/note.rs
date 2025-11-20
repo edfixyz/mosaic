@@ -345,7 +345,7 @@ pub async fn commit_note(
     };
 
     // Execute transaction
-    let tx_result = match client.new_transaction(account_id, tx_req).await {
+    let tx_id = match client.submit_new_transaction(account_id, tx_req).await {
         Ok(result) => result,
         Err(e) => {
             tracing::error!(
@@ -364,27 +364,11 @@ pub async fn commit_note(
         }
     };
 
-    let tx_id = tx_result.executed_transaction().id();
     tracing::info!(
         transaction_id = %tx_id,
         account_id = %account_id,
         "Transaction executed"
     );
-
-    // Submit transaction
-    if let Err(e) = client.submit_transaction(tx_result).await {
-        tracing::error!(
-            error = %e,
-            transaction_id = %tx_id,
-            account_id = %account_id,
-            note_version = %note.version,
-            note_type = ?note.note_type,
-            note_id = %note_inner.id(),
-            note_hex = %note.miden_note_hex,
-            "Failed to submit transaction"
-        );
-        return Err(Box::new(e));
-    }
 
     Ok(tx_id.to_string())
 }

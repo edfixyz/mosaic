@@ -11,7 +11,7 @@ path = "src/lib.rs"
 mosaic-fi = { path = "../mosaic-fi" }
 mosaic-miden = { path = "../mosaic-miden" }
 mosaic-serve = { path = "../mosaic-serve" }
-rmcp = { version = "0.8.1", features = [
+rmcp = { version = "0.8.3", features = [
     "server",
     "macros",
     "client",

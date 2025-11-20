@@ -2,15 +2,15 @@ use crate::{MidenTransactionId, Network, symbol::encode_symbol};
 use miden_client::{
     Client,
     account::{AccountHeader, AccountId, component::BasicWallet},
-    auth::AuthSecretKey,
+    auth::{AuthSecretKey, PublicKeyCommitment},
     builder::ClientBuilder,
-    crypto::SecretKey,
     keystore::FilesystemKeyStore,
-    rpc::{Endpoint, TonicRpcClient},
+    rpc::{Endpoint, GrpcClient},
     store::{AccountRecord, AccountStatus},
     sync::SyncSummary,
     transaction::TransactionKernel,
 };
+use miden_client_sqlite_store::SqliteStore;
 use miden_lib::account::{
     auth::{AuthRpoFalcon512, NoAuth},
     faucets::BasicFungibleFaucet,
@@ -21,7 +21,6 @@ use miden_objects::{
         AccountBuilder, AccountComponent, AccountStorageMode, AccountType as MidenAccountType,
         StorageMap, StorageSlot,
     },
-    address::{AccountIdAddress, Address, AddressInterface},
     assembly::Assembler,
     asset::TokenSymbol,
 };
@@ -33,7 +32,11 @@ use std::{
 };
 use tokio::sync::{mpsc, oneshot};
 
-type DeskAccountArtifacts = (miden_client::account::Account, SecretKey, Option<String>);
+type DeskAccountArtifacts = (
+    miden_client::account::Account,
+    AuthSecretKey,
+    Option<String>,
+);
 
 pub async fn create_client(
     path: &Path,
@@ -51,16 +54,17 @@ pub async fn create_client(
     };
 
     let timeout_ms = 10_000;
-    let rpc_api = Arc::new(TonicRpcClient::new(&endpoint, timeout_ms));
+    let rpc = Arc::new(GrpcClient::new(&endpoint, timeout_ms));
     let keystore_path = path.join("keystore");
     let sqlite_path = path.join("miden.sqlite3");
     let keystore = Arc::new(FilesystemKeyStore::new(keystore_path)?);
 
-    let client = ClientBuilder::new()
-        .rpc(rpc_api)
+    let store = Arc::new(SqliteStore::new(sqlite_path).await?);
+    let client: Client<FilesystemKeyStore<StdRng>> = ClientBuilder::new()
+        .rpc(rpc)
         .authenticator(keystore.clone())
         .in_debug_mode(true.into())
-        .sqlite_store(sqlite_path.to_str().ok_or("path contains invalid UTF-8")?)
+        .store(store)
         .build()
         .await?;
 
@@ -73,13 +77,15 @@ pub enum ClientCommand {
         respond_to: oneshot::Sender<Result<SyncSummary, String>>,
     },
     CreateAccount {
-        respond_to: oneshot::Sender<Result<(miden_client::account::Account, SecretKey), String>>,
+        respond_to:
+            oneshot::Sender<Result<(miden_client::account::Account, AuthSecretKey), String>>,
     },
     CreateFaucetAccount {
         token_symbol: String,
         decimals: u8,
         max_supply: u64,
-        respond_to: oneshot::Sender<Result<(miden_client::account::Account, SecretKey), String>>,
+        respond_to:
+            oneshot::Sender<Result<(miden_client::account::Account, AuthSecretKey), String>>,
     },
     CreateDeskAccount {
         quote_symbol: String,
@@ -276,24 +282,27 @@ impl ClientHandle {
     /// Implementation of account creation logic
     async fn create_account_impl(
         client: &mut Client<FilesystemKeyStore<StdRng>>,
-    ) -> Result<(miden_client::account::Account, SecretKey), String> {
+    ) -> Result<(miden_client::account::Account, AuthSecretKey), String> {
         let mut init_seed = [0u8; 32];
         client.rng().fill_bytes(&mut init_seed);
 
-        let key_pair = SecretKey::with_rng(client.rng());
+        let key_pair = AuthSecretKey::new_rpo_falcon512_with_rng(client.rng());
+        let auth_component = AuthRpoFalcon512::new(PublicKeyCommitment::from(
+            key_pair.public_key().to_commitment(),
+        ));
 
         let builder = AccountBuilder::new(init_seed)
             .account_type(MidenAccountType::RegularAccountUpdatableCode)
             .storage_mode(AccountStorageMode::Private)
-            .with_auth_component(AuthRpoFalcon512::new(key_pair.public_key()))
+            .with_auth_component(auth_component)
             .with_component(BasicWallet);
 
-        let (miden_account, seed) = builder
+        let miden_account = builder
             .build()
             .map_err(|e| format!("Account build failed: {}", e))?;
 
         client
-            .add_account(&miden_account, Some(seed), false)
+            .add_account(&miden_account, false)
             .await
             .map_err(|e| format!("Add account failed: {}", e))?;
         client.sync_state().await?;
@@ -307,7 +316,7 @@ impl ClientHandle {
         token_symbol: &str,
         decimals: u8,
         max_supply: u64,
-    ) -> Result<(miden_client::account::Account, SecretKey), String> {
+    ) -> Result<(miden_client::account::Account, AuthSecretKey), String> {
         let mut init_seed = [0u8; 32];
         client.rng().fill_bytes(&mut init_seed);
 
@@ -315,23 +324,26 @@ impl ClientHandle {
             TokenSymbol::new(token_symbol).map_err(|e| format!("Invalid token symbol: {}", e))?;
         let max_supply_felt = Felt::new(max_supply);
 
-        let key_pair = SecretKey::with_rng(client.rng());
+        let key_pair = AuthSecretKey::new_rpo_falcon512_with_rng(client.rng());
+        let auth_component = AuthRpoFalcon512::new(PublicKeyCommitment::from(
+            key_pair.public_key().to_commitment(),
+        ));
 
         let builder = AccountBuilder::new(init_seed)
             .account_type(MidenAccountType::FungibleFaucet)
             .storage_mode(AccountStorageMode::Public)
-            .with_auth_component(AuthRpoFalcon512::new(key_pair.public_key()))
+            .with_auth_component(auth_component)
             .with_component(
                 BasicFungibleFaucet::new(symbol, decimals, max_supply_felt)
                     .map_err(|e| format!("Failed to create faucet component: {}", e))?,
             );
 
-        let (miden_account, seed) = builder
+        let miden_account = builder
             .build()
             .map_err(|e| format!("Account build failed: {}", e))?;
 
         client
-            .add_account(&miden_account, Some(seed), false)
+            .add_account(&miden_account, false)
             .await
             .map_err(|e| format!("Add account failed: {}", e))?;
         client.sync_state().await?;
@@ -353,19 +365,11 @@ impl ClientHandle {
             return Err("Base and quote accounts must be different".to_string());
         }
 
-        let (base_network_id, base_address) = Address::from_bech32(base_account)
+        let (base_network_id, base_account_id) = AccountId::from_bech32(base_account)
             .map_err(|e| format!("Invalid base account '{}': {}", base_account, e))?;
-        let base_account_id = match base_address {
-            Address::AccountId(addr) => addr.id(),
-            _ => return Err("Base address must resolve to an account".to_string()),
-        };
 
-        let (quote_network_id, quote_address) = Address::from_bech32(quote_account)
+        let (quote_network_id, quote_account_id) = AccountId::from_bech32(quote_account)
             .map_err(|e| format!("Invalid quote account '{}': {}", quote_account, e))?;
-        let quote_account_id = match quote_address {
-            Address::AccountId(addr) => addr.id(),
-            _ => return Err("Quote address must resolve to an account".to_string()),
-        };
 
         if base_network_id != quote_network_id {
             return Err(format!(
@@ -375,7 +379,7 @@ impl ClientHandle {
         }
 
         let network = Network::from_network_id(base_network_id)
-            .ok_or_else(|| format!("Unsupported network id {}", base_network_id))?;
+            .ok_or_else(|| format!("Unsupported network id"))?;
 
         tracing::info!(
             base_symbol,
@@ -386,7 +390,7 @@ impl ClientHandle {
             "Creating desk account"
         );
 
-        let key_pair = SecretKey::with_rng(client.rng());
+        let key_pair = AuthSecretKey::new_rpo_falcon512_with_rng(client.rng());
         let mut init_seed = [0u8; 32];
         client.rng().fill_bytes(&mut init_seed);
         let assembler: Assembler = TransactionKernel::assembler().with_debug_mode(true);
@@ -432,7 +436,7 @@ impl ClientHandle {
         .map_err(|e| format!("Failed to compile desk component: {}", e))?
         .with_supports_all_types();
 
-        let (book_contract, book_seed) = AccountBuilder::new(init_seed)
+        let book_contract = AccountBuilder::new(init_seed)
             .account_type(MidenAccountType::RegularAccountImmutableCode)
             .storage_mode(AccountStorageMode::Public)
             .with_component(BasicWallet)
@@ -442,7 +446,7 @@ impl ClientHandle {
             .map_err(|e| format!("Failed to build desk account: {}", e))?;
 
         client
-            .add_account(&book_contract, Some(book_seed), false)
+            .add_account(&book_contract, false)
             .await
             .map_err(|e| format!("Failed to add desk account: {}", e))?;
         client.sync_state().await?;
@@ -479,9 +483,8 @@ impl ClientHandle {
         // Workaround End ===============================================================================================
 
         let account_id = book_contract.id();
-        let address = AccountIdAddress::new(account_id, AddressInterface::Unspecified);
         let network_id = network.to_network_id();
-        let bech32 = Address::from(address).to_bech32(network_id);
+        let bech32 = account_id.to_bech32(network_id);
 
         let market_url = env::var("MOSAIC_SERVER")
             .ok()
@@ -583,8 +586,8 @@ impl ClientHandle {
         );
 
         // Execute transaction
-        let tx_result = client
-            .new_transaction(account_id, tx_request)
+        let tx_id = client
+            .submit_new_transaction(account_id, tx_request)
             .await
             .map_err(|e| {
                 tracing::error!(
@@ -594,27 +597,6 @@ impl ClientHandle {
                 );
                 format!("Failed to execute transaction: {:?}", e)
             })?;
-
-        let tx_id = tx_result.executed_transaction().id();
-        tracing::info!(
-            transaction_id = %tx_id,
-            account_id = %account_id,
-            note_id = %note_id,
-            "Successfully executed transaction"
-        );
-
-        // Submit transaction
-        client.submit_transaction(tx_result).await.map_err(|e| {
-            tracing::error!(
-                error = %e,
-                error_debug = ?e,
-                transaction_id = %tx_id,
-                account_id = %account_id,
-                note_id = %note_id,
-                "Failed to submit transaction"
-            );
-            format!("Failed to submit transaction: {}", e)
-        })?;
 
         tracing::info!(
             transaction_id = %tx_id,
@@ -650,22 +632,13 @@ impl ClientHandle {
             "Public"
         };
 
-        // Get network ID for bech32 encoding
-        let network_id = network.to_network_id();
-
         // Iterate through assets
         let mut assets = Vec::new();
         for asset in account.vault().assets() {
             match asset {
                 Asset::Fungible(fungible_asset) => {
                     let faucet_id = fungible_asset.faucet_id();
-                    // Convert to bech32 format
-                    let faucet_address = miden_objects::address::AccountIdAddress::new(
-                        faucet_id,
-                        miden_objects::address::AddressInterface::Unspecified,
-                    );
-                    let faucet_bech32 =
-                        miden_objects::address::Address::from(faucet_address).to_bech32(network_id);
+                    let faucet_bech32 = faucet_id.to_bech32(network.to_network_id());
 
                     assets.push(crate::AssetData {
                         faucet: faucet_bech32,
@@ -685,13 +658,7 @@ impl ClientHandle {
             }
         }
 
-        // Get account ID in bech32 format
-        let account_address = miden_objects::address::AccountIdAddress::new(
-            account_id,
-            miden_objects::address::AddressInterface::Unspecified,
-        );
-        let account_id_bech32 =
-            miden_objects::address::Address::from(account_address).to_bech32(network_id);
+        let account_id_bech32 = account_id.to_bech32(network.to_network_id());
 
         Ok(crate::AccountStatusData {
             account_id: account_id_bech32,
@@ -729,7 +696,7 @@ impl ClientHandle {
 
         // Store the key in the keystore
         self.keystore
-            .add_key(&AuthSecretKey::RpoFalcon512(key_pair))
+            .add_key(&key_pair)
             .map_err(|e| format!("Failed to store key: {}", e))?;
 
         Ok(account)
@@ -760,7 +727,7 @@ impl ClientHandle {
 
         // Store the key in the keystore
         self.keystore
-            .add_key(&AuthSecretKey::RpoFalcon512(key_pair))
+            .add_key(&key_pair)
             .map_err(|e| format!("Failed to store key: {}", e))?;
 
         Ok(account)
@@ -794,7 +761,7 @@ impl ClientHandle {
             .map_err(|_| "Client thread dropped response".to_string())??;
 
         self.keystore
-            .add_key(&AuthSecretKey::RpoFalcon512(key_pair))
+            .add_key(&key_pair)
             .map_err(|e| format!("Failed to store key: {}", e))?;
 
         Ok((account, market_url))
