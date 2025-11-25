@@ -25,6 +25,7 @@ export const getOrImportAccount = async (
   console.log('Account hex:', accountHex)
 
   const accountId = AccountId.fromHex(accountHex)
+  await client.syncState()
   let account = await client.getAccount(accountId)
 
   if (!account) {

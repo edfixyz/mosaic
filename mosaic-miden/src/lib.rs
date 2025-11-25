@@ -8,7 +8,7 @@ pub mod version;
 
 pub type MidenTransactionId = String;
 
-use miden_objects::account::NetworkId;
+use miden_client::address::NetworkId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt;

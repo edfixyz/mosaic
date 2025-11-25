@@ -1,4 +1,5 @@
-use.miden::account
+use.miden::active_account
+use miden::native_account
 use.std::sys
 
 # Configuration
@@ -24,7 +25,7 @@ const.OFFSET_BUY = 10
 proc.check_status
     # => [...]
 
-    push.CONFIG_STATUS exec.account::get_item
+    push.CONFIG_STATUS exec.active_account::get_item
     # => [STATUS, ...]
 
     padw eqw
@@ -61,7 +62,7 @@ end
 export.update_status
     # => [STATUS]
 
-    push.CONFIG_STATUS exec.account::set_item
+    push.CONFIG_STATUS exec.native_account::set_item
     # => [OLD_STATUS]
 
     dropw
@@ -85,7 +86,7 @@ export.insert_offer
     # => [price, amount]
 
     push.BOOK_HEAD_OFFSET exec.compute_slot
-    exec.account::get_item
+    exec.active_account::get_item
     # => [zero, zero, zero, head_id, price, amount]
 
     drop drop drop
@@ -121,7 +122,7 @@ export.insert_offer
                 push.0 # Stop loop
             else
                 dup push.0.0.0 push.BOOK_OFFSET exec.compute_slot
-                exec.account::get_map_item                    
+                exec.active_account::get_map_item
                 # => [current_previous_id, current_next_id, current_price, current_amount, current_id, previous_id, price, amount]
 
                 dup.6 dup.3
@@ -168,7 +169,7 @@ proc.insert_before
     else
         dup push.0.0.0
         push.BOOK_OFFSET exec.compute_slot
-        exec.account::get_map_item
+        exec.active_account::get_map_item
         # => [current_previous_id, current_next_id, current_price, current_amount, current_id, price, amount]
 
         movup.2 drop movup.2 drop swap drop
@@ -182,7 +183,7 @@ proc.insert_before
 
         push.0.0.0        
         push.BOOK_OFFSET exec.compute_slot
-        exec.account::set_map_item
+        exec.native_account::set_map_item
         dropw dropw
         # => [id, current_previous_id, current_id]
 
@@ -199,7 +200,7 @@ proc.insert_before
             # => [id, current_previous_id, id, id, current_id]
 
             push.0.0.0 push.BOOK_HEAD_OFFSET exec.compute_slot
-            exec.account::set_item
+            exec.native_account::set_item
             dropw
             # => [current_previous_id, id, id, current_id]
         else
@@ -247,7 +248,7 @@ proc.insert_last
 
         push.0.0.0
         push.BOOK_OFFSET exec.compute_slot
-        exec.account::set_map_item
+        exec.native_account::set_map_item
         dropw dropw
         # => [previous_id, id]
 
@@ -276,13 +277,13 @@ proc.insert_first
 
     dup push.0.0.0
     push.BOOK_HEAD_OFFSET exec.compute_slot
-    exec.account::set_item
+    exec.native_account::set_item
     dropw
     # => [id, previous_id=0, next_id, price, amount, next_id, id]
 
     push.0.0.0
     push.BOOK_OFFSET exec.compute_slot
-    exec.account::set_map_item
+    exec.native_account::set_map_item
     dropw dropw
     # => [next_id, id]
 
@@ -309,7 +310,7 @@ proc.update_next
         # => [0, 0, 0, id, updated_next_id, id]
 
         push.BOOK_OFFSET exec.compute_slot
-        exec.account::get_map_item
+        exec.active_account::get_map_item
         # => [previous_id, next_id, price, amount, updated_next_id, id]
 
         movup.4
@@ -322,7 +323,7 @@ proc.update_next
         # => [zero, zero, zero, id, previous_id, updated_next_id, price, amount]
 
         push.BOOK_OFFSET exec.compute_slot
-        exec.account::set_map_item
+        exec.native_account::set_map_item
         dropw dropw
         # => []
     end
@@ -347,7 +348,7 @@ proc.update_previous
         # => [0, 0, 0, id, updated_previous_id, id]
 
         push.BOOK_OFFSET exec.compute_slot
-        exec.account::get_map_item
+        exec.active_account::get_map_item
         # => [previous_id, next_id, price, amount, updated_previous_id, id]
 
         drop
@@ -360,7 +361,7 @@ proc.update_previous
         # => [zero, zero, zero, id, updated_previous_id, next_id, price, amount]
 
         push.BOOK_OFFSET exec.compute_slot
-        exec.account::set_map_item
+        exec.native_account::set_map_item
         dropw dropw
         # => []
     end
@@ -374,7 +375,7 @@ proc.increment_count
     push.COUNTER_OFFSET exec.compute_slot
     # => [index]
 
-    exec.account::get_item
+    exec.active_account::get_item
     # => [count, 0, 0, 0]
 
     push.1 add
@@ -393,7 +394,7 @@ proc.increment_count
     push.COUNTER_OFFSET exec.compute_slot
     # => [index, count+1, 0, 0, 0]
 
-    exec.account::set_item
+    exec.native_account::set_item
     # => [OLD_VALUE]
 
     dropw

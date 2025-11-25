@@ -1,5 +1,4 @@
 use miden_client::{account::AccountId, keystore::FilesystemKeyStore};
-use miden_objects::address::{AccountIdAddress, Address, AddressInterface};
 use rand::rngs::StdRng;
 use std::sync::{Arc, Mutex};
 
@@ -18,9 +17,8 @@ impl<T> Account<T> {
 
     pub fn miden_account_id_bech32(&self) -> String {
         let account_id = self.miden_account.id();
-        let address = AccountIdAddress::new(account_id, AddressInterface::BasicWallet);
         let network_id = self.network.to_network_id();
-        Address::from(address).to_bech32(network_id)
+        account_id.to_bech32(network_id)
     }
 }
 
