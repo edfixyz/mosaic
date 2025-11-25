@@ -20,4 +20,4 @@ schemars = "1.0.4"
 miden-client = { version = "0.12.3", features = ["testing"] }
 miden-lib = { version = "0.12.3", features = ["testing"] }
 miden-objects = { version = "0.12.3", default-features = false, features = ["testing"] }
-miden-assembly = "0.17.1"
+miden-assembly = "0.19.1"
