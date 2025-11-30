@@ -352,21 +352,19 @@ impl Mosaic {
         let order_kind = req.order.kind();
         let order_clone = req.order.clone();
 
-        let result = {
-            let mut serve = self.serve.lock().await;
-            serve
-                .create_account_order(secret, order_clone)
-                .await
-                .map_err(|e| {
-                    let error_msg = format!("Failed to execute {order_kind}: {e}");
-                    tracing::error!(
-                        error = %error_msg,
-                        order_kind = order_kind,
-                        "Failed to create account via account order"
-                    );
-                    McpError::internal_error(error_msg, None)
-                })?
-        };
+        let serve = self.serve.lock().await;
+        let result = serve
+            .create_account_order(secret, order_clone)
+            .await
+            .map_err(|e| {
+                let error_msg = format!("Failed to execute {order_kind}: {e}");
+                tracing::error!(
+                    error = %error_msg,
+                    order_kind = order_kind,
+                    "Failed to create account via account order"
+                );
+                McpError::internal_error(error_msg, None)
+            })?;
 
         let result_kind = result.kind();
         tracing::info!(
@@ -635,15 +633,14 @@ impl Mosaic {
             }
         };
 
-        // Get client handle
-        let client_handle = {
-            let mut serve = self.serve.lock().await;
-            serve.get_client(secret, network).await.map_err(|e| {
-                let error_msg = format!("Failed to get client: {}", e);
-                tracing::error!(error = %error_msg, network = %req.network, "Failed to get client");
-                McpError::internal_error(error_msg, None)
-            })?
-        };
+        // Get client handle (lock is acquired and released inside get_client)
+        let serve = self.serve.lock().await;
+        let client_handle = serve.get_client(secret, network).await.map_err(|e| {
+            let error_msg = format!("Failed to get client: {}", e);
+            tracing::error!(error = %error_msg, network = %req.network, "Failed to get client");
+            McpError::internal_error(error_msg, None)
+        })?;
+        drop(serve); // Explicitly release lock before sync
 
         // Sync the client state - ClientHandle.sync() is Send-safe!
         let sync_result = client_handle.sync().await.map_err(|e| {
@@ -706,23 +703,21 @@ impl Mosaic {
         let order: mosaic_fi::note::Order = req.order;
 
         // Create the note
-        let mosaic_note = {
-            let mut serve = self.serve.lock().await;
-            serve
-                .create_private_note(secret, network, req.account_id.clone(), order, req.commit)
-                .await
-                .map_err(|e| {
-                    let error_msg = format!("Failed to create order note: {}", e);
-                    tracing::error!(
-                        error = %error_msg,
-                        account_id = %req.account_id,
-                        network = %req.network,
-                        commit = req.commit,
-                        "Failed to create order note"
-                    );
-                    McpError::internal_error(error_msg, None)
-                })?
-        };
+        let serve = self.serve.lock().await;
+        let mosaic_note = serve
+            .create_private_note(secret, network, req.account_id.clone(), order, req.commit)
+            .await
+            .map_err(|e| {
+                let error_msg = format!("Failed to create order note: {}", e);
+                tracing::error!(
+                    error = %error_msg,
+                    account_id = %req.account_id,
+                    network = %req.network,
+                    commit = req.commit,
+                    "Failed to create order note"
+                );
+                McpError::internal_error(error_msg, None)
+            })?;
 
         tracing::info!(
             tool = "create_order",
@@ -787,31 +782,29 @@ impl Mosaic {
         };
 
         // Create the note
-        let miden_note = {
-            let mut serve = self.serve.lock().await;
-            serve
-                .create_note_from_masm(
-                    secret,
-                    network,
-                    req.account_id.clone(),
-                    note_type,
-                    req.program,
-                    req.libraries,
-                    req.inputs,
-                    req.note_secret,
-                )
-                .await
-                .map_err(|e| {
-                    let error_msg = format!("Failed to create note from MASM: {}", e);
-                    tracing::error!(
-                        error = %error_msg,
-                        account_id = %req.account_id,
-                        network = %req.network,
-                        "Failed to create note from MASM"
-                    );
-                    McpError::internal_error(error_msg, None)
-                })?
-        };
+        let serve = self.serve.lock().await;
+        let miden_note = serve
+            .create_note_from_masm(
+                secret,
+                network,
+                req.account_id.clone(),
+                note_type,
+                req.program,
+                req.libraries,
+                req.inputs,
+                req.note_secret,
+            )
+            .await
+            .map_err(|e| {
+                let error_msg = format!("Failed to create note from MASM: {}", e);
+                tracing::error!(
+                    error = %error_msg,
+                    account_id = %req.account_id,
+                    network = %req.network,
+                    "Failed to create note from MASM"
+                );
+                McpError::internal_error(error_msg, None)
+            })?;
 
         tracing::info!(
             tool = "create_raw_note",
@@ -857,22 +850,20 @@ impl Mosaic {
         };
 
         // Get account status
-        let account_status = {
-            let mut serve = self.serve.lock().await;
-            serve
-                .get_account_status(secret, network, req.account_id.clone())
-                .await
-                .map_err(|e| {
-                    let error_msg = format!("Failed to get account status: {}", e);
-                    tracing::error!(
-                        error = %error_msg,
-                        account_id = %req.account_id,
-                        network = %req.network,
-                        "Failed to get account status"
-                    );
-                    McpError::internal_error(error_msg, None)
-                })?
-        };
+        let serve = self.serve.lock().await;
+        let account_status = serve
+            .get_account_status(secret, network, req.account_id.clone())
+            .await
+            .map_err(|e| {
+                let error_msg = format!("Failed to get account status: {}", e);
+                tracing::error!(
+                    error = %error_msg,
+                    account_id = %req.account_id,
+                    network = %req.network,
+                    "Failed to get account status"
+                );
+                McpError::internal_error(error_msg, None)
+            })?;
 
         tracing::info!(
             tool = "get_account_status",
@@ -950,22 +941,20 @@ impl Mosaic {
         );
 
         // Consume the note
-        let transaction_id = {
-            let mut serve = self.serve.lock().await;
-            serve
-                .consume_note(secret, network, req.account_id.clone(), req.miden_note)
-                .await
-                .map_err(|e| {
-                    let error_msg = format!("Failed to consume note: {}", e);
-                    tracing::error!(
-                        error = %error_msg,
-                        account_id = %req.account_id,
-                        network = %req.network,
-                        "MCP tools layer: Failed to consume note"
-                    );
-                    McpError::internal_error(error_msg, None)
-                })?
-        };
+        let serve = self.serve.lock().await;
+        let transaction_id = serve
+            .consume_note(secret, network, req.account_id.clone(), req.miden_note)
+            .await
+            .map_err(|e| {
+                let error_msg = format!("Failed to consume note: {}", e);
+                tracing::error!(
+                    error = %error_msg,
+                    account_id = %req.account_id,
+                    network = %req.network,
+                    "MCP tools layer: Failed to consume note"
+                );
+                McpError::internal_error(error_msg, None)
+            })?;
 
         tracing::info!(
             tool = "consume_note",
@@ -1120,10 +1109,8 @@ impl Mosaic {
     ) -> Result<CallToolResult, McpError> {
         let secret = derive_secret_from_context(&context)?;
 
-        let clients_flushed = {
-            let mut serve = self.serve.lock().await;
-            serve.flush_clients_for_secret(secret)
-        };
+        let serve = self.serve.lock().await;
+        let clients_flushed = serve.flush_clients_for_secret(secret).await;
 
         tracing::info!(
             tool = "flush",
